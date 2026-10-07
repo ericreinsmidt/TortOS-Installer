@@ -127,6 +127,8 @@ pub trait Card: Read + Write + Seek {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Progress {
+    /// The release coming from GitHub, before anything is written
+    Downloading { done: u64, total: u64 },
     Writing { done: u64, total: u64 },
     Checking { done: u64, total: u64 },
 }
@@ -156,6 +158,7 @@ fn write_span(
     let mut buf = vec![0u8; CHUNK];
     let mut image = open().map_err(|e| format!("Opening the image: {e}"))?;
     skip_bytes(&mut image, from)?;
+    progress(Progress::Writing { done: 0, total });
     card.seek(SeekFrom::Start(from)).map_err(|e| format!("Seeking on the card: {e}"))?;
     let mut at = from;
     while at < to {
@@ -234,6 +237,8 @@ pub fn fresh(
     }
     let image0 = read_sector0(&mut *open().map_err(|e| format!("Opening the image: {e}"))?)?;
     partitions(&image0).ok_or("The image has no partition table")?;
+    // From here the card is changed: the screen hears so first
+    progress(Progress::Writing { done: 0, total: image_len - SECTOR });
     card.seek(SeekFrom::Start(0)).map_err(|e| format!("Seeking on the card: {e}"))?;
     card.write_all(&[0u8; 512]).map_err(|e| format!("Clearing the card's table: {e}"))?;
     card.sync().map_err(|e| format!("Flushing the card: {e}"))?;

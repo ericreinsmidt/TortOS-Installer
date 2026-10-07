@@ -194,14 +194,18 @@ pub fn helper(args: &[String]) -> i32 {
         return 2;
     };
     let mut last = std::time::Instant::now();
+    let mut last_word = "";
     let mut progress = |p: Progress| {
         let (word, done, total) = match p {
+            // The window downloads before the helper starts
+            Progress::Downloading { .. } => return,
             Progress::Writing { done, total } => ("writing", done, total),
             Progress::Checking { done, total } => ("checking", done, total),
         };
-        if done == total || last.elapsed().as_millis() >= 200 {
+        if word != last_word || done == total || last.elapsed().as_millis() >= 200 {
             println!("{word} {done} {total}");
             last = std::time::Instant::now();
+            last_word = word;
         }
     };
     let never = AtomicBool::new(false);

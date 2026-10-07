@@ -37,6 +37,12 @@ header img { width: 84px; height: 45px; }
 .wordmark .os { color: var(--accent); }
 header .sub { color: var(--dim); font-size: 18px; margin-left: 2px; position: relative; top: 4px; }
 header .ver { margin-left: auto; color: var(--dim); font-size: 13px; }
+/* A newer installer: a link, before the version */
+header .newer {
+	margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
+	color: var(--accent); font: inherit; font-size: 13px; text-decoration: underline;
+}
+header .newer:not([hidden]) + .ver { margin-left: 0; }
 
 h2 {
 	font-size: 13px; font-weight: normal; letter-spacing: 1.5px; text-transform: uppercase;

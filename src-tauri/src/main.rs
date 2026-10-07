@@ -8,6 +8,7 @@ mod device;
 mod fat32;
 mod image;
 mod install;
+mod release;
 mod writer;
 
 use std::path::PathBuf;
@@ -40,22 +41,51 @@ async fn list_cards() -> Vec<cards::Card> {
     tauri::async_runtime::spawn_blocking(cards::list).await.unwrap_or_default()
 }
 
-/// The release to put on the card: the Pixel's image or the Brick's zip.
-/// Downloading the latest TortOS comes in a later step; until then they are
-/// files named by TORTOS_IMAGE and TORTOS_ZIP.
-fn source_path(brick: bool) -> Result<PathBuf, String> {
-    std::env::var_os(if brick { "TORTOS_ZIP" } else { "TORTOS_IMAGE" })
-        .map(PathBuf::from)
-        .ok_or_else(|| "Nothing to write yet: downloading TortOS isn't built yet.".to_string())
+/// TortOS's latest version, for the screen to say what it installs.
+#[tauri::command]
+async fn latest_tortos() -> Result<String, String> {
+    if let Some(path) = local_release(true).or_else(|| local_release(false)) {
+        return Ok(format!("from {}", path.file_name().unwrap_or_default().to_string_lossy()));
+    }
+    tauri::async_runtime::spawn_blocking(|| release::latest().map(|r| r.version().to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// A newer installer's version, if one is out.
+#[tauri::command]
+async fn newer_installer() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(release::newer_installer).await.ok().flatten()
+}
+
+/// The installer's releases page, in the browser. A fixed address: nothing
+/// from the page goes into the command.
+#[tauri::command]
+fn open_installer_releases() {
+    let url = release::INSTALLER_RELEASES;
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(target_os = "linux")]
+    let opener = "xdg-open";
+    let _ = std::process::Command::new(opener).arg(url).spawn();
+}
+
+/// A release file to use instead of downloading one, for trying out a build
+/// before it is published: TORTOS_ZIP for the Brick, TORTOS_IMAGE for the
+/// Pixel.
+fn local_release(brick: bool) -> Option<PathBuf> {
+    std::env::var_os(if brick { "TORTOS_ZIP" } else { "TORTOS_IMAGE" }).map(PathBuf::from)
 }
 
 /// The write, once the card is found again: it must still be there, and an
-/// update must be onto that device's TortOS.
+/// update must be onto that device's TortOS. The release is downloaded first,
+/// and the download removed after.
 fn write(
     card_id: &str,
     brick: bool,
     action: install::Action,
-    source: &std::path::Path,
     progress: &mut dyn FnMut(writer::Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -67,11 +97,36 @@ fn write(
     if action == install::Action::Update && card.device != Some(device) {
         return Err("This card doesn't have that device's TortOS on it to update.".into());
     }
+    let (source, downloaded) = match local_release(brick) {
+        Some(path) => (path, false),
+        None => {
+            let latest = release::latest()?;
+            let asset = latest.asset(brick)?;
+            let dir = std::env::temp_dir().join("tortos-installer");
+            (release::download(&latest, asset, &dir, progress, &|| cancel.load(Ordering::Relaxed))?, true)
+        }
+    };
+    let result = write_to(card_id, &card, brick, action, &source, progress, cancel);
+    if downloaded {
+        let _ = std::fs::remove_file(&source);
+    }
+    result
+}
+
+fn write_to(
+    card_id: &str,
+    card: &cards::Card,
+    brick: bool,
+    action: install::Action,
+    source: &std::path::Path,
+    progress: &mut dyn FnMut(writer::Progress),
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     match (brick, action) {
         (true, install::Action::Update) => {
-            let volume = card.volume.ok_or("The card isn't mounted, so it can't be updated. Take it out and put it back in.")?;
+            let volume = card.volume.as_deref().ok_or("The card isn't mounted, so it can't be updated. Take it out and put it back in.")?;
             let entries = brick::entries(source)?;
-            brick::update(std::path::Path::new(&volume), &entries, progress, &|| cancel.load(Ordering::Relaxed))
+            brick::update(std::path::Path::new(volume), &entries, progress, &|| cancel.load(Ordering::Relaxed))
         }
         (true, _) => install::run(card_id, install::Action::BrickFresh, source, card.size_bytes, progress, cancel),
         (false, _) => install::run(card_id, action, source, card.size_bytes, progress, cancel),
@@ -91,7 +146,6 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
         Some(a @ (install::Action::Update | install::Action::Fresh)) => a,
         _ => return Err("Unknown action".into()),
     };
-    let source = source_path(brick)?;
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut slot = running.0.lock().unwrap();
@@ -102,17 +156,22 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
     }
     std::thread::spawn(move || {
         let mut last = std::time::Instant::now();
+        let mut last_phase = "";
         let mut progress = |p: writer::Progress| {
             let (phase, done, total) = match p {
+                writer::Progress::Downloading { done, total } => ("downloading", done, total),
                 writer::Progress::Writing { done, total } => ("writing", done, total),
                 writer::Progress::Checking { done, total } => ("checking", done, total),
             };
-            if done == total || last.elapsed().as_millis() >= 100 {
+            // A new phase always gets through: the screen tells a stop before
+            // anything was written from one after
+            if phase != last_phase || done == total || last.elapsed().as_millis() >= 100 {
                 let _ = app.emit("progress", ProgressEvent { phase, done, total });
                 last = std::time::Instant::now();
+                last_phase = phase;
             }
         };
-        let result = write(&card, brick, action, &source, &mut progress, &cancel);
+        let result = write(&card, brick, action, &mut progress, &cancel);
         if let Some(r) = app.try_state::<Running>() {
             *r.0.lock().unwrap() = None;
         }
@@ -141,7 +200,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(Running::default())
-        .invoke_handler(tauri::generate_handler![list_cards, start, cancel])
+        .invoke_handler(tauri::generate_handler![list_cards, latest_tortos, newer_installer, open_installer_releases, start, cancel])
         .run(tauri::generate_context!())
         .expect("TortOS Installer could not start");
 }

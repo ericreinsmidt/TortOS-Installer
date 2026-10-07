@@ -18,6 +18,10 @@ serde_json = "1"
 lzma-rust2 = { version = "0.20", default-features = false, features = ["std", "xz"] }
 # The Brick's release is a .zip, deflated or stored: a pure-Rust inflater only
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Downloads from GitHub: rustls with its own root certificates, so nothing
+# to install alongside on Linux
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

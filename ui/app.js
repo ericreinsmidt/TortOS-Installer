@@ -7,7 +7,13 @@ const invoke = window.__TAURI__ ? window.__TAURI__.core.invoke : null;
 const $ = (id) => document.getElementById(id);
 const DEVICE = { brick: "the Brick", pixel2: "the Pixel 2" };
 
-const state = { cards: [], cardId: null, device: null, action: null, userDevice: false, screen: "main", writing: null };
+const state = { cards: [], cardId: null, device: null, action: null, userDevice: false, screen: "main", writing: null,
+	latest: null, latestError: null };
+
+// "TortOS 1.3.0", or "TortOS from" the local file a test build comes from
+function latestName() {
+	return state.latest ? "TortOS " + state.latest : "TortOS";
+}
 
 function plural(n, one, many) {
 	return n + " " + (n === 1 ? one : many);
@@ -86,10 +92,12 @@ function render() {
 	go.textContent = fresh ? "Erase and install" : "Update card";
 	go.classList.toggle("erase", fresh);
 	go.disabled = !card || !state.device;
+	const already = !fresh && card && state.latest && card.version === state.latest;
 	$("note").textContent = !card ? ""
 		: !state.device ? "Choose the device this card is for."
-		: fresh ? "Everything on the card goes: games, music, saves."
-		: "Nothing on the card is erased.";
+		: state.latestError && !state.latest ? "GitHub can't be reached right now. TortOS is downloaded from there."
+		: already ? "This card already has " + latestName() + ": updating writes it again."
+		: latestName() + " \u00b7 " + (fresh ? "Everything on the card goes: games, music, saves." : "Nothing on the card is erased.");
 }
 
 // A new card, or a different one picked: take its device and the action it
@@ -160,7 +168,8 @@ async function write() {
 	$("working-title").textContent = state.action === "fresh" ? "Installing TortOS" : "Updating the card";
 	// The Brick's update copies onto the mounted card: no password
 	const copy = state.device === "brick" && state.action === "update";
-	$("working-phase").textContent = copy ? "Reading the release" : "Opening the card";
+	const local = state.latest && state.latest.startsWith("from ");
+	$("working-phase").textContent = !local ? "Getting " + latestName() : copy ? "Reading the release" : "Opening the card";
 	$("working-what").textContent = copy ? WRITING.brick.update : "Your computer may ask for your password.";
 	$("working-bar").style.width = "0";
 	$("working-cancel").disabled = false;
@@ -182,6 +191,13 @@ const WRITING = {
 // update reads each file back as it goes, so its bar is the copy alone
 function progress(p) {
 	const w = state.writing;
+	if (p.phase === "downloading") {
+		$("working-bar").style.width = (p.total ? p.done / p.total : 0) * 100 + "%";
+		$("working-phase").textContent = "Downloading " + latestName() + " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
+		$("working-what").textContent = "From GitHub, then checked against the release's checksums.";
+		return;
+	}
+	w.wrote = true;
 	const copy = w.device === "brick" && w.action === "update";
 	const part = p.total ? p.done / p.total : 0;
 	$("working-bar").style.width = (copy ? part : (p.phase === "checking" ? 0.5 : 0) + part / 2) * 100 + "%";
@@ -198,9 +214,13 @@ function finish(f) {
 	head.classList.toggle("bad", !f.ok);
 	if (f.ok) {
 		$("finished-title").textContent = "Done";
-		head.textContent = w.action === "fresh" ? "TortOS is on the card." : "The card is updated.";
+		head.textContent = w.action === "fresh" ? latestName() + " is on the card." : "The card is updated to " + latestName() + ".";
 		$("finished-what").textContent = "Put it in " + DEVICE[w.device] + " and turn it on."
 			+ (w.action === "fresh" ? " The first start takes a few seconds longer." : "");
+	} else if (f.cancelled && !w.wrote) {
+		$("finished-title").textContent = "Stopped";
+		head.textContent = "Stopped before anything was written.";
+		$("finished-what").textContent = "The card is as it was.";
 	} else if (f.cancelled) {
 		$("finished-title").textContent = "Stopped";
 		head.textContent = "The write was stopped partway.";
@@ -232,7 +252,29 @@ if (window.__TAURI__) {
 	window.__TAURI__.event.listen("progress", (e) => progress(e.payload));
 	window.__TAURI__.event.listen("finished", (e) => finish(e.payload));
 	window.__TAURI__.app.getVersion().then((v) => { $("ver").textContent = v; });
+	findLatest();
+	invoke("newer_installer").then((v) => {
+		if (!v) return;
+		const link = $("newer");
+		link.textContent = "Installer " + v + " is out";
+		link.hidden = false;
+	});
 }
+
+// What TortOS the button installs, asked once; again every half minute while
+// GitHub can't be reached
+async function findLatest() {
+	try {
+		state.latest = await invoke("latest_tortos");
+		state.latestError = null;
+	} catch (e) {
+		state.latestError = String(e);
+		setTimeout(findLatest, 30000);
+	}
+	if (state.screen === "main") render();
+}
+
+$("newer").addEventListener("click", () => invoke("open_installer_releases"));
 render();
 refresh();
 setInterval(refresh, 2000);
