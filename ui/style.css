@@ -30,6 +30,20 @@ body {
 
 .window { width: 760px; padding: 22px 28px 26px; }
 
+/* The turtle behind everything, faint, as on Hare's and Wire's page. The
+ * ground is on html alone, so body's ground doesn't paint over this */
+body::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background: url("turtle.svg") no-repeat center;
+	/* 1.375 is the mark's own 286x208 */
+	background-size: min(600px, 86vw, calc(62vh * 1.375)) auto;
+	opacity: .09;
+}
+
 header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
 header img { width: 84px; height: 45px; }
 .wordmark { font: 34px/1 "Wordmark", "TortOS", sans-serif; letter-spacing: .5px; }
