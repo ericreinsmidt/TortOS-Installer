@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::writer::Progress;
 
 const TORTOS: &str = "ericreinsmidt/TortOS";
-const INSTALLER: &str = "ericreinsmidt/tortos-installer";
-pub const INSTALLER_RELEASES: &str = "https://github.com/ericreinsmidt/tortos-installer/releases/latest";
+const INSTALLER: &str = "ericreinsmidt/TortOS-Installer";
+pub const INSTALLER_RELEASES: &str = "https://github.com/ericreinsmidt/TortOS-Installer/releases/latest";
 const SUMS: &str = "SHA256SUMS";
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -90,10 +90,11 @@ pub fn latest() -> Result<Release, String> {
 /// can't be asked: this is only ever a notice.
 pub fn newer_installer() -> Option<String> {
     let release = latest_of(INSTALLER).ok()?;
-    // GitHub's names ignore case, and it answers for TortOS-Installer, the
-    // old installer, until this one's repository exists: only a release
-    // under this exact name counts
-    if !release.html_url.starts_with(&format!("https://github.com/{INSTALLER}/")) {
+    // Only a release of this repository counts, by its page's address, as
+    // GitHub answers a renamed repository's old name too. Its names ignore
+    // case, so the comparison does as well
+    let page = release.html_url.to_ascii_lowercase();
+    if !page.starts_with(&format!("https://github.com/{}/", INSTALLER.to_ascii_lowercase())) {
         return None;
     }
     let theirs = release.version().to_string();

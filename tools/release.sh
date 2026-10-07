@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-REPO=ericreinsmidt/tortos-installer
+REPO=ericreinsmidt/TortOS-Installer
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
 DIST=dist/$VERSION
 NOTES=dist/notes-$VERSION.md

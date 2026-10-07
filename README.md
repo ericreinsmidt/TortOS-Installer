@@ -6,7 +6,7 @@ without touching the games, music and saves on it.
 
 ## Download
 
-Get it from the [latest release](https://github.com/ericreinsmidt/tortos-installer/releases/latest):
+Get it from the [latest release](https://github.com/ericreinsmidt/TortOS-Installer/releases/latest):
 
 | | |
 |---|---|
