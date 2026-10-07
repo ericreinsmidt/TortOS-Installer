@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TortOS Installer",
-  "version": "0.1.0",
   "identifier": "games.tortos.installer",
   "build": {
     "frontendDist": "../ui"
@@ -31,6 +30,24 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Eric Reinsmidt",
+    "copyright": "Copyright (c) 2026 Eric Reinsmidt",
+    "category": "Utility",
+    "homepage": "https://github.com/ericreinsmidt/tortos-installer",
+    "shortDescription": "Puts TortOS on a microSD card for the TrimUI Brick or the GKD Pixel 2",
+    "longDescription": "Installs TortOS on a microSD card for the TrimUI Brick or the GKD Pixel 2, or updates a card that already has it without touching the games, music and saves on it.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "pkexec | policykit-1"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "polkit"
+        ]
+      }
+    }
   }
 }

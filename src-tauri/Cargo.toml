@@ -1,6 +1,6 @@
 [package]
 name = "tortos-installer"
-version = "0.1.0"
+version = "2.0.0"
 description = "Puts TortOS on a TrimUI Brick or GKD Pixel 2 card, or updates one"
 authors = ["Eric Reinsmidt"]
 license = "MIT"
