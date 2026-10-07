@@ -16,6 +16,8 @@ serde_json = "1"
 # The Pixel 2's image is .img.xz: a pure-Rust decoder, so nothing to link on
 # three systems, and no encoder
 lzma-rust2 = { version = "0.20", default-features = false, features = ["std", "xz"] }
+# The Brick's release is a .zip, deflated or stored: a pure-Rust inflater only
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

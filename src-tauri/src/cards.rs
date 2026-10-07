@@ -39,6 +39,8 @@ pub struct Card {
     pub games: u32,
     pub songs: u32,
     pub books: u32,
+    /// Where its games partition is mounted, if it is
+    pub volume: Option<String>,
     /// False for a Pixel 2 card that has never been started: its games
     /// partition, TORTOS, is made by its first start, and until then there is
     /// no TortOS/ and no version to read
@@ -111,6 +113,7 @@ fn read_version(root: &Path) -> Option<String> {
 /// Fills in what a mounted volume holds. `pixel` is whether the disk carries
 /// the Pixel 2's PX2BOOT partition.
 fn read_contents(card: &mut Card, root: &Path, pixel: bool) {
+    card.volume = Some(root.to_string_lossy().into_owned());
     let tortos = root.join("TortOS").is_dir();
     card.device = if pixel {
         Some(Device::Pixel2)
@@ -188,6 +191,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                volume: None,
                 started,
             };
             // The largest partition is where the games are: TORTOS on a Pixel
@@ -290,6 +294,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                volume: None,
                 started,
             };
             // The largest partition is where the games are: TORTOS on a Pixel
@@ -420,6 +425,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                volume: None,
                 started,
             };
             match games {
@@ -449,7 +455,7 @@ mod tests {
 
     fn card() -> Card {
         Card { id: "t".into(), name: String::new(), size_bytes: 0, reader: String::new(),
-               device: None, version: None, games: 0, songs: 0, books: 0, started: true }
+               device: None, version: None, games: 0, songs: 0, books: 0, volume: None, started: true }
     }
 
     #[test]

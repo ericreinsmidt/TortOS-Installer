@@ -314,6 +314,32 @@ mod win {
     }
 }
 
+/// Hands a written card back to the system, so its new partitions show up
+/// without taking the card out: Linux and Windows read the new table, and a
+/// Mac mounts what is on it. Nothing here is worth failing the write over.
+pub fn close(card: DeviceCard, id: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        const BLKRRPART: libc::c_ulong = 0x125F;
+        unsafe { libc::ioctl(card.file.as_raw_fd(), BLKRRPART as _, 0) };
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Ioctl::IOCTL_DISK_UPDATE_PROPERTIES;
+        use windows::Win32::System::IO::DeviceIoControl;
+        let mut n = 0u32;
+        let h = HANDLE(card.file.as_raw_handle());
+        unsafe { let _ = DeviceIoControl(h, IOCTL_DISK_UPDATE_PROPERTIES, None, 0, None, 0, Some(&mut n), None); }
+    }
+    drop(card);
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("diskutil").args(["mountDisk", id]).output();
+    let _ = id;
+}
+
 /// The card for writing. On Linux only the helper, running as root, calls it.
 pub fn open(id: &str) -> Result<DeviceCard, String> {
     #[cfg(target_os = "macos")]
