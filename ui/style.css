@@ -100,3 +100,22 @@ footer { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
 footer { flex-direction: column; align-items: flex-end; gap: 8px; }
 footer .go { margin-left: 0; }
 footer .note { margin: 0; text-align: right; }
+
+/* The screens after the button: confirm, working, finished */
+.panel {
+	background: var(--panel); border: 2px solid var(--line); border-radius: var(--radius);
+	padding: 18px 20px; display: grid; gap: 10px;
+}
+.panel p { margin: 0; color: var(--dim); font-size: 15px; }
+.panel .big { color: var(--text); font-size: 20px; }
+.panel .big.bad { color: var(--bad); }
+.bar { height: 10px; border-radius: 999px; background: var(--panel-hi); border: 1px solid var(--line); overflow: hidden; }
+.bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .2s linear; }
+footer.row { flex-direction: row; align-items: center; justify-content: space-between; }
+.plain {
+	background: none; border: 1px solid var(--line); color: var(--soft); font: inherit; font-size: 16px;
+	border-radius: 12px; padding: 11px 20px; cursor: pointer;
+}
+.plain:hover { border-color: var(--dim); }
+.plain:disabled { opacity: .4; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .bar > div { transition: none; } }

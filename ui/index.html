@@ -15,35 +15,75 @@
 		<span class="ver" id="ver"></span>
 	</header>
 
-	<h2>Device</h2>
-	<div class="pair" data-group="device">
-		<button class="choice" data-value="brick"><b>TrimUI Brick</b><span>Brick and Brick Hammer</span></button>
-		<button class="choice" data-value="pixel2"><b>GKD Pixel 2</b><span>TortOS on plastron</span></button>
-	</div>
-
-	<h2>Card</h2>
-	<div class="card" id="card">
-		<svg width="30" height="38" viewBox="0 0 30 38" aria-hidden="true">
-			<path d="M3 1h17l9 9v25a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z" fill="none" stroke="#3dd6ff" stroke-width="2"/>
-			<path d="M8 5v6M12 5v6M16 5v6" stroke="#3dd6ff" stroke-width="2"/>
-		</svg>
-		<div class="info">
-			<div class="name" id="card-name">Looking for cards</div>
-			<div class="what" id="card-what"></div>
+	<section id="main">
+		<h2>Device</h2>
+		<div class="pair" data-group="device">
+			<button class="choice" data-value="brick"><b>TrimUI Brick</b><span>Brick and Brick Hammer</span></button>
+			<button class="choice" data-value="pixel2"><b>GKD Pixel 2</b><span>TortOS on plastron</span></button>
 		</div>
-		<select id="card-pick" aria-label="Card" hidden></select>
-	</div>
 
-	<h2>What to do</h2>
-	<div class="pair" data-group="action">
-		<button class="choice" data-value="update"><b>Update</b><span id="update-what">Keeps the games, music and saves on the card.</span></button>
-		<button class="choice erase" data-value="fresh"><b>Fresh install</b><span>Erases the whole card and starts over.</span></button>
-	</div>
+		<h2>Card</h2>
+		<div class="card" id="card">
+			<svg width="30" height="38" viewBox="0 0 30 38" aria-hidden="true">
+				<path d="M3 1h17l9 9v25a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z" fill="none" stroke="#3dd6ff" stroke-width="2"/>
+				<path d="M8 5v6M12 5v6M16 5v6" stroke="#3dd6ff" stroke-width="2"/>
+			</svg>
+			<div class="info">
+				<div class="name" id="card-name">Looking for cards</div>
+				<div class="what" id="card-what"></div>
+			</div>
+			<select id="card-pick" aria-label="Card" hidden></select>
+		</div>
 
-	<footer>
-		<button class="go" id="go" disabled>Update card</button>
-		<div class="note" id="note"></div>
-	</footer>
+		<h2>What to do</h2>
+		<div class="pair" data-group="action">
+			<button class="choice" data-value="update"><b>Update</b><span id="update-what">Keeps the games, music and saves on the card.</span></button>
+			<button class="choice erase" data-value="fresh"><b>Fresh install</b><span>Erases the whole card and starts over.</span></button>
+		</div>
+
+		<footer>
+			<button class="go" id="go" disabled>Update card</button>
+			<div class="note" id="note"></div>
+		</footer>
+	</section>
+
+	<!-- One more step before erasing a card -->
+	<section id="confirm" hidden>
+		<h2>Fresh install</h2>
+		<div class="panel">
+			<p class="big">Erase <span id="confirm-card"></span>?</p>
+			<p>Everything on it goes: games, music, saves. Then TortOS is installed for <span id="confirm-device"></span>.</p>
+		</div>
+		<footer class="row">
+			<button class="plain" id="confirm-back">Cancel</button>
+			<button class="go erase" id="confirm-go">Erase and install</button>
+		</footer>
+	</section>
+
+	<section id="working" hidden>
+		<h2 id="working-title">Updating the card</h2>
+		<div class="panel">
+			<p class="big" id="working-phase">Opening the card</p>
+			<div class="bar" role="progressbar" aria-labelledby="working-phase"><div id="working-bar"></div></div>
+			<p id="working-what"></p>
+		</div>
+		<footer class="row">
+			<span></span>
+			<button class="plain" id="working-cancel">Cancel</button>
+		</footer>
+	</section>
+
+	<section id="finished" hidden>
+		<h2 id="finished-title">Done</h2>
+		<div class="panel">
+			<p class="big" id="finished-head"></p>
+			<p id="finished-what"></p>
+		</div>
+		<footer class="row">
+			<span></span>
+			<button class="go" id="finished-back">Back</button>
+		</footer>
+	</section>
 </div>
 
 <script src="app.js"></script>

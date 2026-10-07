@@ -1,18 +1,24 @@
-// The main screen: the cards in this computer, which device and what to do.
-// The cards come from the app (list_cards), every two seconds, so a card put
-// in or taken out shows without a button. Writing comes in a later step.
+// The installer's screens. Main: the cards in this computer (list_cards, every
+// two seconds, so a card put in or taken out shows by itself), which device
+// and what to do. Then a confirm before erasing, the write with its progress
+// ("progress" and "finished" events from the app), and how it ended.
 
 const invoke = window.__TAURI__ ? window.__TAURI__.core.invoke : null;
 const $ = (id) => document.getElementById(id);
 const DEVICE = { brick: "the Brick", pixel2: "the Pixel 2" };
 
-const state = { cards: [], cardId: null, device: null, action: null, userDevice: false };
+const state = { cards: [], cardId: null, device: null, action: null, userDevice: false, screen: "main", writing: null };
 
 function plural(n, one, many) {
 	return n + " " + (n === 1 ? one : many);
 }
 
 // Decimal, as the card's label is: a 64 GB card reads 62.5, not 58.2
+// A Pixel 2 card before its first start has no volume to name it by
+function cardName(c) {
+	return c.started ? c.name : "Pixel 2 card";
+}
+
 function size(bytes) {
 	return (bytes / 1e9).toFixed(1) + " GB";
 }
@@ -23,6 +29,7 @@ function selected() {
 
 function describe(card) {
 	if (!card.device) return "No TortOS on this card";
+	if (!card.started) return "TortOS for " + DEVICE[card.device] + ", not started yet: its first start makes room for games";
 	const which = "TortOS " + (card.version || "before 1.4") + " for " + DEVICE[card.device];
 	const counts = [];
 	if (card.games) counts.push(plural(card.games, "game", "games"));
@@ -96,7 +103,8 @@ function cardChanged() {
 }
 
 async function refresh() {
-	if (!invoke) return;
+	// Only on the main screen: never asking the system about disks mid-write
+	if (!invoke || state.screen !== "main") return;
 	let cards;
 	try { cards = await invoke("list_cards"); } catch (_) { return; }
 	const before = state.cardId;
@@ -124,7 +132,94 @@ $("card-pick").addEventListener("change", (e) => {
 	cardChanged();
 });
 
-if (window.__TAURI__) window.__TAURI__.app.getVersion().then((v) => { $("ver").textContent = v; });
+// ---- the screens after the button --------------------------------------
+
+const SCREENS = ["main", "confirm", "working", "finished"];
+function show(name) {
+	for (const s of SCREENS) $(s).hidden = s !== name;
+	state.screen = name;
+}
+
+const MB = (n) => Math.round(n / 1e6);
+
+function begin() {
+	const card = selected();
+	if (!card || !state.device) return;
+	if (state.action === "fresh") {
+		$("confirm-card").textContent = cardName(card) + " \u00b7 " + size(card.size_bytes);
+		$("confirm-device").textContent = DEVICE[state.device];
+		show("confirm");
+	} else {
+		write();
+	}
+}
+
+async function write() {
+	const card = selected();
+	state.writing = { card, device: state.device, action: state.action };
+	$("working-title").textContent = state.action === "fresh" ? "Installing TortOS" : "Updating the card";
+	$("working-phase").textContent = "Opening the card";
+	$("working-what").textContent = "Your computer may ask for your password.";
+	$("working-bar").style.width = "0";
+	$("working-cancel").disabled = false;
+	show("working");
+	try {
+		await invoke("start", { card: card.id, device: state.device, action: state.action });
+	} catch (e) {
+		finish({ ok: false, cancelled: false, message: String(e) });
+	}
+}
+
+// Writing is the first half of the bar, checking the second
+function progress(p) {
+	const half = p.total ? p.done / p.total / 2 : 0;
+	$("working-bar").style.width = ((p.phase === "checking" ? 0.5 : 0) + half) * 100 + "%";
+	$("working-phase").textContent = (p.phase === "checking" ? "Checking what was written" : "Writing")
+		+ " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
+	$("working-what").textContent = p.phase === "checking"
+		? "Reading it all back, to be sure the card holds what was written."
+		: state.writing.action === "fresh" ? "TortOS and plastron, the whole card." : "TortOS and plastron. The games, music and saves stay.";
+}
+
+function finish(f) {
+	const w = state.writing || {};
+	const head = $("finished-head");
+	head.classList.toggle("bad", !f.ok);
+	if (f.ok) {
+		$("finished-title").textContent = "Done";
+		head.textContent = w.action === "fresh" ? "TortOS is on the card." : "The card is updated.";
+		$("finished-what").textContent = "Put it in " + DEVICE[w.device] + " and turn it on."
+			+ (w.action === "fresh" ? " The first start takes a few seconds longer." : "");
+	} else if (f.cancelled) {
+		$("finished-title").textContent = "Stopped";
+		head.textContent = "The write was stopped partway.";
+		$("finished-what").textContent = w.action === "fresh"
+			? "The card has no system on it now. Install again to finish."
+			: "The card won't start until the update is finished: run it again. The games, music and saves are still there.";
+	} else {
+		$("finished-title").textContent = "That didn't work";
+		head.textContent = f.message || "Something went wrong.";
+		$("finished-what").textContent = "";
+	}
+	state.writing = null;
+	show("finished");
+}
+
+$("go").addEventListener("click", begin);
+$("confirm-back").addEventListener("click", () => show("main"));
+$("confirm-go").addEventListener("click", write);
+$("working-cancel").addEventListener("click", () => {
+	$("working-cancel").disabled = true;
+	$("working-phase").textContent = "Stopping";
+	invoke("cancel");
+});
+$("finished-back").addEventListener("click", () => { show("main"); refresh(); });
+
+if (window.__TAURI__) {
+	window.__TAURI__.event.listen("progress", (e) => progress(e.payload));
+	window.__TAURI__.event.listen("finished", (e) => finish(e.payload));
+	window.__TAURI__.app.getVersion().then((v) => { $("ver").textContent = v; });
+}
 render();
 refresh();
 setInterval(refresh, 2000);

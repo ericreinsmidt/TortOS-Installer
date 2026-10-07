@@ -39,6 +39,10 @@ pub struct Card {
     pub games: u32,
     pub songs: u32,
     pub books: u32,
+    /// False for a Pixel 2 card that has never been started: its games
+    /// partition, TORTOS, is made by its first start, and until then there is
+    /// no TortOS/ and no version to read
+    pub started: bool,
 }
 
 const AUDIO: &[&str] = &["mp3", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wav"];
@@ -172,6 +176,7 @@ mod system {
                 .map(|a| a.iter().filter_map(Value::as_dictionary).collect())
                 .unwrap_or_default();
             let pixel = partitions.iter().any(|p| text(p, "VolumeName") == "PX2BOOT");
+            let started = !pixel || partitions.iter().any(|p| text(p, "VolumeName") == "TORTOS");
             let size = info.get("TotalSize").and_then(Value::as_unsigned_integer).unwrap_or(0);
             let mut card = Card {
                 id: id.clone(),
@@ -183,6 +188,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                started,
             };
             // The largest partition is where the games are: TORTOS on a Pixel
             // 2's card, never its system partition
@@ -272,6 +278,7 @@ mod system {
                 continue;
             }
             let pixel = parts.iter().any(|p| text(p, "label") == "PX2BOOT");
+            let started = !pixel || parts.iter().any(|p| text(p, "label") == "TORTOS");
             let model = text(d, "model");
             let mut card = Card {
                 id: text(d, "path").to_string(),
@@ -283,6 +290,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                started,
             };
             // The largest partition is where the games are: TORTOS on a Pixel
             // 2's card, never its system partition, which a desktop may mount
@@ -400,6 +408,7 @@ mod system {
                 continue;
             }
             let pixel = volumes.iter().any(|(_, l)| l == "PX2BOOT");
+            let started = !pixel || volumes.iter().any(|(_, l)| l == "TORTOS");
             let games = volumes.iter().find(|(_, l)| !pixel || l != "PX2BOOT").cloned();
             let mut card = Card {
                 id: format!("\\\\.\\PhysicalDrive{disk}"),
@@ -411,6 +420,7 @@ mod system {
                 games: 0,
                 songs: 0,
                 books: 0,
+                started,
             };
             match games {
                 Some((letter, l)) => {
@@ -439,7 +449,7 @@ mod tests {
 
     fn card() -> Card {
         Card { id: "t".into(), name: String::new(), size_bytes: 0, reader: String::new(),
-               device: None, version: None, games: 0, songs: 0, books: 0 }
+               device: None, version: None, games: 0, songs: 0, books: 0, started: true }
     }
 
     #[test]

@@ -1,3 +1,6 @@
 fn main() {
-    tauri_build::build()
+    // Windows runs the installer as administrator: see windows-app.manifest
+    let windows = tauri_build::WindowsAttributes::new().app_manifest(include_str!("windows-app.manifest"));
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("tauri build step failed");
 }
