@@ -1,0 +1,5 @@
+# Windows, cross-built with cargo-xwin: Microsoft's C runtime ships without its
+# debug symbols, and lld-link says so for every object it uses (LNK4099). It
+# only matters for debugging, and the release build is stripped anyway.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/ignore:4099"]

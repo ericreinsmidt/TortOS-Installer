@@ -1,0 +1,86 @@
+/* The installer's main screen, in TortOS's palette and type: the same as the
+ * launcher and Down To The Wire. */
+@font-face { font-family: "TortOS"; src: url("fonts/menu.ttf") format("truetype"); }
+@font-face { font-family: "Wordmark"; src: url("fonts/wordmark.ttf") format("truetype"); }
+
+:root {
+	--ground: #0a0b0f;
+	--panel: #161820;
+	--panel-hi: #1e212b;
+	--line: #262a36;
+	--text: #ededf2;
+	--soft: #c6c9d6;
+	--dim: #9499ac;
+	--accent: #3dd6ff;
+	--green: #80b076;
+	--bad: #ff6b5e;
+	--radius: 14px;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--ground); }
+body {
+	margin: 0;
+	color: var(--text);
+	font: 16px/1.4 "TortOS", system-ui, sans-serif;
+	min-height: 100vh;
+	display: flex;
+	justify-content: center;
+}
+
+.window { width: 760px; padding: 22px 28px 26px; }
+
+header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+header img { width: 84px; height: 45px; }
+.wordmark { font: 34px/1 "Wordmark", "TortOS", sans-serif; letter-spacing: .5px; }
+.wordmark .tort { color: var(--green); }
+.wordmark .os { color: var(--accent); }
+header .sub { color: var(--dim); font-size: 18px; margin-left: 2px; position: relative; top: 4px; }
+header .ver { margin-left: auto; color: var(--dim); font-size: 13px; }
+
+h2 {
+	font-size: 13px; font-weight: normal; letter-spacing: 1.5px; text-transform: uppercase;
+	color: var(--dim); margin: 18px 0 8px;
+}
+
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.choice {
+	background: var(--panel); border: 2px solid var(--line); border-radius: var(--radius);
+	padding: 14px 16px; cursor: pointer; text-align: left; color: inherit; font: inherit;
+	transition: border-color .12s, background .12s;
+}
+.choice:hover { background: var(--panel-hi); }
+.choice.on { border-color: var(--accent); background: var(--panel-hi); }
+.choice b { display: block; font-weight: normal; font-size: 19px; }
+.choice span { display: block; color: var(--dim); font-size: 14px; margin-top: 3px; }
+.choice.erase.on { border-color: var(--bad); }
+.choice.erase.on b { color: var(--bad); }
+
+.card {
+	display: flex; align-items: center; gap: 14px;
+	background: var(--panel); border: 2px solid var(--line); border-radius: var(--radius);
+	padding: 12px 16px;
+}
+.card svg { flex: none; }
+.card .name { font-size: 19px; }
+.card .what { color: var(--dim); font-size: 14px; }
+.card .found { color: var(--green); }
+.card select {
+	margin-left: auto; background: var(--panel-hi); color: var(--soft); font: inherit; font-size: 14px;
+	border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px;
+}
+
+footer { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+.ghost {
+	background: none; border: 1px solid var(--line); color: var(--soft); font: inherit; font-size: 15px;
+	border-radius: 12px; padding: 11px 16px; cursor: pointer;
+}
+.ghost:hover { border-color: var(--dim); }
+.go {
+	margin-left: auto; background: var(--accent); color: #06222b; font: inherit; font-size: 18px;
+	border: 0; border-radius: 12px; padding: 12px 26px; cursor: pointer;
+}
+.go:hover { filter: brightness(1.08); }
+.go.erase { background: var(--bad); color: #2b0906; }
+.note { color: var(--dim); font-size: 13px; margin-top: 10px; min-height: 18px; }
