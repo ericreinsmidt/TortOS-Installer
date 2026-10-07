@@ -7,14 +7,15 @@
     "frontendDist": "../ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "TortOS Installer",
         "width": 760,
-        "height": 560,
+        "height": 640,
         "minWidth": 640,
-        "minHeight": 520
+        "minHeight": 620
       }
     ],
     "security": {
