@@ -3,15 +3,3 @@
 /dist/
 /src-tauri/gen/
 .DS_Store
-
-# Only what it takes to build the installer belongs here: plans, notes and the
-# like live elsewhere
-/docs/
-/notes/
-/plan*
-*.plan.md
-BACKLOG.md
-TODO.md
-NOTES.md
-CLAUDE.md
-.claude/
