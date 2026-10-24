@@ -2,10 +2,8 @@
 // `--write` it is the helper instead, with no window (install.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod brick;
 mod cards;
 mod device;
-mod fat32;
 mod image;
 mod install;
 mod release;
@@ -72,16 +70,17 @@ fn open_installer_releases() {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
-/// A release file to use instead of downloading one, for trying out a build
-/// before it is published: TORTOS_ZIP for the Brick, TORTOS_IMAGE for the
-/// Pixel.
+/// A card image to use instead of downloading one, for trying out a build
+/// before it is published: TORTOS_BRICK_IMAGE for the Brick, TORTOS_IMAGE for
+/// the Pixel.
 fn local_release(brick: bool) -> Option<PathBuf> {
-    std::env::var_os(if brick { "TORTOS_ZIP" } else { "TORTOS_IMAGE" }).map(PathBuf::from)
+    std::env::var_os(if brick { "TORTOS_BRICK_IMAGE" } else { "TORTOS_IMAGE" }).map(PathBuf::from)
 }
 
 /// The write, once the card is found again: it must still be there, and an
-/// update must be onto that device's TortOS. The release is downloaded first,
-/// and the download removed after.
+/// update must be onto that device's TortOS, on its own system: a Brick card
+/// on TrimUI's firmware only moves over by a fresh install. The release is
+/// downloaded first, and the download removed after.
 fn write(
     card_id: &str,
     brick: bool,
@@ -97,6 +96,11 @@ fn write(
     if action == install::Action::Update && card.device != Some(device) {
         return Err("This card doesn't have that device's TortOS on it to update.".into());
     }
+    if action == install::Action::Update && card.trimui {
+        return Err("This card runs TrimUI's firmware, so it can't be updated: moving it to TortOS's own \
+                    system erases it. A fresh install does that."
+            .into());
+    }
     let (source, downloaded) = match local_release(brick) {
         Some(path) => (path, false),
         None => {
@@ -106,31 +110,15 @@ fn write(
             (release::download(&latest, asset, &dir, progress, &|| cancel.load(Ordering::Relaxed))?, true)
         }
     };
-    let result = write_to(card_id, &card, brick, action, &source, progress, cancel);
+    let action = match action {
+        install::Action::Update if brick => install::Action::BrickUpdate,
+        a => a,
+    };
+    let result = install::run(card_id, action, &source, progress, cancel);
     if downloaded {
         let _ = std::fs::remove_file(&source);
     }
     result
-}
-
-fn write_to(
-    card_id: &str,
-    card: &cards::Card,
-    brick: bool,
-    action: install::Action,
-    source: &std::path::Path,
-    progress: &mut dyn FnMut(writer::Progress),
-    cancel: &AtomicBool,
-) -> Result<(), String> {
-    match (brick, action) {
-        (true, install::Action::Update) => {
-            let volume = card.volume.as_deref().ok_or("The card isn't mounted, so it can't be updated. Take it out and put it back in.")?;
-            let entries = brick::entries(source)?;
-            brick::update(std::path::Path::new(volume), &entries, progress, &|| cancel.load(Ordering::Relaxed))
-        }
-        (true, _) => install::run(card_id, install::Action::BrickFresh, source, card.size_bytes, progress, cancel),
-        (false, _) => install::run(card_id, action, source, card.size_bytes, progress, cancel),
-    }
 }
 
 /// Starts writing; progress and the end arrive as "progress" and "finished"

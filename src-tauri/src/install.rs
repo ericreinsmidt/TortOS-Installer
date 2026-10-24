@@ -1,9 +1,6 @@
 // Putting TortOS on a card: the steps between the button and the writer.
-//
-// The GKD Pixel 2: its image, fresh or as an update. The Brick's fresh
-// install: a FAT32 card built here with the release in it (fat32.rs), written
-// the same way. The Brick's update needs none of this: it copies files onto
-// the card's mounted volume (brick.rs).
+// Both devices' TortOS is a card image, written whole for a fresh install or
+// its system part for an update (writer.rs).
 //
 // On macOS and Windows the card is opened here (device.rs). On Linux the
 // window isn't root, so the same work runs in a helper the installer starts
@@ -17,17 +14,19 @@ use crate::writer::Progress;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
+    /// The Pixel 2's update
     Update,
+    BrickUpdate,
+    /// Either device's fresh install: the image says which table it has
     Fresh,
-    BrickFresh,
 }
 
 impl Action {
     pub fn parse(s: &str) -> Option<Action> {
         match s {
             "update" => Some(Action::Update),
+            "brick-update" => Some(Action::BrickUpdate),
             "fresh" => Some(Action::Fresh),
-            "brick-fresh" => Some(Action::BrickFresh),
             _ => None,
         }
     }
@@ -35,57 +34,39 @@ impl Action {
     fn word(self) -> &'static str {
         match self {
             Action::Update => "update",
+            Action::BrickUpdate => "brick-update",
             Action::Fresh => "fresh",
-            Action::BrickFresh => "brick-fresh",
         }
     }
 }
 
-/// Where a Pixel 2 update starts: its bootloader, at 32 KB. The table before
-/// it is the card's own and stays.
+/// Where an update starts, its bootloader (the table before it is the card's
+/// own and stays), and the partition it ends with, the root: 32 KB on the
+/// Pixel 2, 128 KB on the Brick, whose state partition after the root stays.
 const PIXEL_SKIP: u64 = 32 * 1024;
+const BRICK_SKIP: u64 = 128 * 1024;
+const ROOT: usize = 2;
 
 /// The write itself, with the card opened here. What the helper runs, and
-/// what macOS and Windows run in the window's process. `source` is the
-/// Pixel's image or the Brick's zip; `card_bytes` the card's size.
+/// what macOS and Windows run in the window's process. `source` is the card
+/// image.
 pub fn write_here(
     card_id: &str,
     action: Action,
     source: &Path,
-    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let cancelled = || cancel.load(Ordering::Relaxed);
+    let len = crate::image::size(source).map_err(|e| format!("Reading the image: {e}"))?;
+    let open = || crate::image::open(source);
+    let mut card = crate::device::open(card_id)?;
     let result = match action {
-        Action::Update | Action::Fresh => {
-            let len = crate::image::size(source).map_err(|e| format!("Reading the image: {e}"))?;
-            let open = || crate::image::open(source);
-            let mut card = crate::device::open(card_id)?;
-            let result = if action == Action::Update {
-                crate::writer::update(&mut card, &open, len, PIXEL_SKIP, progress, &cancelled).map(|_| ())
-            } else {
-                crate::writer::fresh(&mut card, &open, len, progress, &cancelled)
-            };
-            crate::device::close(card, card_id);
-            result
-        }
-        Action::BrickFresh => {
-            let entries = crate::brick::entries(source)?;
-            // Folders the release doesn't date take its newest file's date
-            let time = entries.iter().map(|e| e.time).max().unwrap_or(0);
-            let id = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u32)
-                .unwrap_or(0x7E57_C0DE);
-            let image = crate::fat32::build(card_bytes, entries, time, id)?;
-            let open = || Ok(image.open());
-            let mut card = crate::device::open(card_id)?;
-            let result = crate::writer::fresh(&mut card, &open, image.len, progress, &cancelled);
-            crate::device::close(card, card_id);
-            result
-        }
+        Action::Update => crate::writer::update(&mut card, &open, len, PIXEL_SKIP, ROOT, progress, &cancelled).map(|_| ()),
+        Action::BrickUpdate => crate::writer::update(&mut card, &open, len, BRICK_SKIP, ROOT, progress, &cancelled).map(|_| ()),
+        Action::Fresh => crate::writer::fresh(&mut card, &open, len, progress, &cancelled),
     };
+    crate::device::close(card, card_id);
     result
 }
 
@@ -94,14 +75,13 @@ pub fn run(
     card_id: &str,
     action: Action,
     source: &Path,
-    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    return run_helper(card_id, action, source, card_bytes, progress, cancel);
+    return run_helper(card_id, action, source, progress, cancel);
     #[cfg(not(target_os = "linux"))]
-    return write_here(card_id, action, source, card_bytes, progress, cancel);
+    return write_here(card_id, action, source, progress, cancel);
 }
 
 /// Linux: pkexec runs this program again as root with `--write`, which asks
@@ -111,7 +91,6 @@ fn run_helper(
     card_id: &str,
     action: Action,
     source: &Path,
-    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -122,7 +101,6 @@ fn run_helper(
         .arg(&me)
         .args(["--write", action.word(), card_id])
         .arg(source)
-        .arg(card_bytes.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -180,17 +158,16 @@ fn parse_line(line: &str) -> Option<Line> {
     }
 }
 
-/// The helper: `--write update|fresh|brick-fresh CARD SOURCE CARD_BYTES`, run
-/// as root on Linux.
+/// The helper: `--write update|brick-update|fresh CARD SOURCE`, run as root on
+/// Linux.
 /// Prints progress at most every few hundred milliseconds.
 pub fn helper(args: &[String]) -> i32 {
-    let (Some(action), Some(card), Some(source), Some(card_bytes)) = (
+    let (Some(action), Some(card), Some(source)) = (
         args.first().and_then(|a| Action::parse(a)),
         args.get(1),
         args.get(2).map(PathBuf::from),
-        args.get(3).and_then(|n| n.parse::<u64>().ok()),
     ) else {
-        eprintln!("usage: tortos-installer --write update|fresh|brick-fresh CARD SOURCE CARD_BYTES");
+        eprintln!("usage: tortos-installer --write update|brick-update|fresh CARD SOURCE");
         return 2;
     };
     let mut last = std::time::Instant::now();
@@ -209,7 +186,7 @@ pub fn helper(args: &[String]) -> i32 {
         }
     };
     let never = AtomicBool::new(false);
-    match write_here(card, action, &source, card_bytes, &mut progress, &never) {
+    match write_here(card, action, &source, &mut progress, &never) {
         Ok(()) => {
             println!("ok");
             0
@@ -236,6 +213,6 @@ mod tests {
         }
         assert!(parse_line("something else").is_none());
         assert_eq!(Action::parse("fresh").map(Action::word), Some("fresh"));
-        assert_eq!(Action::parse("brick-fresh").map(Action::word), Some("brick-fresh"));
+        assert_eq!(Action::parse("brick-update").map(Action::word), Some("brick-update"));
     }
 }

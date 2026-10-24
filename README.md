@@ -35,8 +35,7 @@ it, then offers what fits:
 
 - **Update** a card that already has TortOS: the newest TortOS goes on, and
   the games, music, saves and settings stay.
-- **Fresh install** on any card: it is erased, and TortOS goes on. A Brick
-  card is formatted FAT32, which Windows can't do itself on a card over 32 GB.
+- **Fresh install** on any card: it is erased, and TortOS goes on.
 
 TortOS is downloaded from its latest release on GitHub and checked against
 the release's checksums before anything is written, and everything written is

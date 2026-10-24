@@ -1,5 +1,5 @@
 // What to put on the card, from GitHub: the latest TortOS release, the
-// Brick's zip or the Pixel's image out of it, checked against the release's
+// Brick's or the Pixel's card image out of it, checked against the release's
 // SHA256SUMS before anything is written. And whether a newer installer is out.
 //
 // GitHub's "latest" never names a draft or a pre-release, so a beta stays
@@ -38,14 +38,11 @@ impl Release {
         self.tag_name.trim_start_matches('v')
     }
 
-    /// The Brick's zip, TortOS-v1.3.0.zip, or the Pixel's image,
-    /// TortOS-v1.3.0-pixel2.img.xz
+    /// The device's card image: TortOS-v1.7.0-brick.img.xz or
+    /// TortOS-v1.7.0-pixel2.img.xz. Releases before 1.7.0 had a zip for the
+    /// Brick, for TrimUI's firmware, and none of these
     pub fn asset(&self, brick: bool) -> Result<&Asset, String> {
-        let want = if brick {
-            format!("TortOS-v{}.zip", self.version())
-        } else {
-            format!("TortOS-v{}-pixel2.img.xz", self.version())
-        };
+        let want = format!("TortOS-v{}-{}.img.xz", self.version(), if brick { "brick" } else { "pixel2" });
         self.assets
             .iter()
             .find(|a| a.name == want)
@@ -206,13 +203,15 @@ mod tests {
     #[test]
     fn picks_each_devices_file() {
         let r = release(
-            "v1.3.0",
-            &["SHA256SUMS", "TortOS-v1.3.0-pixel2-sources.tar", "TortOS-v1.3.0-pixel2.img.xz", "TortOS-v1.3.0.zip"],
+            "v1.7.0",
+            &["SHA256SUMS", "TortOS-v1.7.0-pixel2-sources.tar", "TortOS-v1.7.0-pixel2.img.xz",
+              "TortOS-v1.7.0-brick-sources.tar", "TortOS-v1.7.0-brick.img.xz"],
         );
-        assert_eq!(r.version(), "1.3.0");
-        assert_eq!(r.asset(true).unwrap().name, "TortOS-v1.3.0.zip");
-        assert_eq!(r.asset(false).unwrap().name, "TortOS-v1.3.0-pixel2.img.xz");
-        assert!(release("v1.0.1", &["TortOS-v1.0.1.zip"]).asset(false).is_err());
+        assert_eq!(r.version(), "1.7.0");
+        assert_eq!(r.asset(true).unwrap().name, "TortOS-v1.7.0-brick.img.xz");
+        assert_eq!(r.asset(false).unwrap().name, "TortOS-v1.7.0-pixel2.img.xz");
+        // Before 1.7.0 the Brick's TortOS was a zip, for TrimUI's firmware
+        assert!(release("v1.6.0", &["TortOS-v1.6.0.zip", "TortOS-v1.6.0-pixel2.img.xz"]).asset(true).is_err());
     }
 
     #[test]

@@ -45,11 +45,13 @@ function describe(card) {
 	return which + " · " + (counts.length ? counts.join(", ") : "no games or music yet");
 }
 
-// An update only makes sense on a card with this device's TortOS on it
+// An update only makes sense on a card with this device's TortOS on it, on
+// its own system
 function updateBlocked(card) {
 	if (!card) return "Put in a card.";
 	if (!card.device) return "There is no TortOS on this card to update.";
 	if (card.device !== state.device) return "This card has TortOS for " + DEVICE[card.device] + ".";
+	if (card.trimui) return "This card runs TrimUI's firmware: moving it to TortOS's own system erases it.";
 	return null;
 }
 
@@ -167,11 +169,9 @@ async function write() {
 	const card = selected();
 	state.writing = { card, device: state.device, action: state.action };
 	$("working-title").textContent = state.action === "fresh" ? "Installing TortOS" : "Updating the card";
-	// The Brick's update copies onto the mounted card: no password
-	const copy = state.device === "brick" && state.action === "update";
 	const local = state.latest && state.latest.startsWith("from ");
-	$("working-phase").textContent = !local ? "Getting " + latestName() : copy ? "Reading the release" : "Opening the card";
-	$("working-what").textContent = copy ? WRITING.brick.update : "Your computer may ask for your password.";
+	$("working-phase").textContent = !local ? "Getting " + latestName() : "Opening the card";
+	$("working-what").textContent = "Your computer may ask for your password.";
 	$("working-bar").style.width = "0";
 	$("working-cancel").disabled = false;
 	show("working");
@@ -182,14 +182,13 @@ async function write() {
 	}
 }
 
-// What is being written, by device and action
+// What is being written, by action: the same on both devices
 const WRITING = {
-	pixel2: { fresh: "TortOS and plastron, the whole card.", update: "TortOS and plastron. The games, music and saves stay." },
-	brick: { fresh: "A new FAT32 card, with TortOS on it.", update: "TortOS's own files. The games, music, saves and settings stay." },
+	fresh: "TortOS and plastron, the whole card.",
+	update: "TortOS and plastron. The games, music and saves stay.",
 };
 
-// Writing is the first half of the bar, checking the second. The Brick's
-// update reads each file back as it goes, so its bar is the copy alone
+// Writing is the first half of the bar, checking the second
 function progress(p) {
 	const w = state.writing;
 	if (p.phase === "downloading") {
@@ -199,14 +198,13 @@ function progress(p) {
 		return;
 	}
 	w.wrote = true;
-	const copy = w.device === "brick" && w.action === "update";
 	const part = p.total ? p.done / p.total : 0;
-	$("working-bar").style.width = (copy ? part : (p.phase === "checking" ? 0.5 : 0) + part / 2) * 100 + "%";
-	$("working-phase").textContent = (copy ? "Copying" : p.phase === "checking" ? "Checking what was written" : "Writing")
+	$("working-bar").style.width = ((p.phase === "checking" ? 0.5 : 0) + part / 2) * 100 + "%";
+	$("working-phase").textContent = (p.phase === "checking" ? "Checking what was written" : "Writing")
 		+ " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
-	$("working-what").textContent = p.phase === "checking" && !copy
+	$("working-what").textContent = p.phase === "checking"
 		? "Reading it all back, to be sure the card holds what was written."
-		: WRITING[w.device][w.action];
+		: WRITING[w.action];
 }
 
 function finish(f) {
@@ -227,8 +225,6 @@ function finish(f) {
 		head.textContent = "The write was stopped partway.";
 		$("finished-what").textContent = w.action === "fresh"
 			? "The card has no system on it now. Install again to finish."
-			: w.device === "brick"
-			? "Nothing on the card was changed: it is as it was."
 			: "The card won't start until the update is finished: run it again. The games, music and saves are still there.";
 	} else {
 		$("finished-title").textContent = "That didn't work";
