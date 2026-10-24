@@ -6,10 +6,11 @@
 // "removable media", not "external": the built-in SD reader calls itself
 // internal, and a listing of external disks misses the card in it.
 //
-// What is on a card decides what the installer offers. The GKD Pixel 2's card
-// has a PX2BOOT partition; the Brick's has TortOS/ beside .tmp_update/ at the
-// top. TortOS/VERSION says which TortOS, from v1.4.0 on; a card made before
-// that has none, and shows as older.
+// What is on a card decides what the installer offers. A card with TortOS's
+// own system on it is known by its boot partition: PX2BOOT on the GKD Pixel
+// 2's, BRICKBOOT on the Brick's. A Brick card on TrimUI's firmware has TortOS/
+// beside .tmp_update/ at the top instead. TortOS/VERSION says which TortOS,
+// from v1.4.0 on; a card made before that has none, and shows as older.
 
 use serde::Serialize;
 use std::fs;
@@ -41,10 +42,23 @@ pub struct Card {
     pub books: u32,
     /// Where its games partition is mounted, if it is
     pub volume: Option<String>,
-    /// False for a Pixel 2 card that has never been started: its games
-    /// partition, TORTOS, is made by its first start, and until then there is
-    /// no TortOS/ and no version to read
+    /// False for a card with TortOS's own system that has never been started:
+    /// its games partition, TORTOS, is made by its first start, and until then
+    /// there is no TortOS/ and no version to read
     pub started: bool,
+    /// A Brick card on TrimUI's firmware: TortOS/ beside .tmp_update/, and no
+    /// BRICKBOOT. Moving it to the Brick's own system erases it
+    pub trimui: bool,
+}
+
+/// The device whose system a boot partition's label names: PX2BOOT the GKD
+/// Pixel 2's, BRICKBOOT the Brick's. None for any other label.
+fn system_of(label: &str) -> Option<Device> {
+    match label {
+        "PX2BOOT" => Some(Device::Pixel2),
+        "BRICKBOOT" => Some(Device::Brick),
+        _ => None,
+    }
 }
 
 const AUDIO: &[&str] = &["mp3", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wav"];
@@ -110,18 +124,13 @@ fn read_version(root: &Path) -> Option<String> {
     (!v.is_empty()).then(|| v.to_string())
 }
 
-/// Fills in what a mounted volume holds. `pixel` is whether the disk carries
-/// the Pixel 2's PX2BOOT partition.
-fn read_contents(card: &mut Card, root: &Path, pixel: bool) {
+/// Fills in what a mounted volume holds. `system` is the device whose boot
+/// partition the disk carries, if any (system_of).
+fn read_contents(card: &mut Card, root: &Path, system: Option<Device>) {
     card.volume = Some(root.to_string_lossy().into_owned());
     let tortos = root.join("TortOS").is_dir();
-    card.device = if pixel {
-        Some(Device::Pixel2)
-    } else if tortos && root.join(".tmp_update").is_dir() {
-        Some(Device::Brick)
-    } else {
-        None
-    };
+    card.trimui = system.is_none() && tortos && root.join(".tmp_update").is_dir();
+    card.device = if card.trimui { Some(Device::Brick) } else { system };
     if tortos {
         card.version = read_version(root);
     }
@@ -178,8 +187,8 @@ mod system {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_dictionary).collect())
                 .unwrap_or_default();
-            let pixel = partitions.iter().any(|p| text(p, "VolumeName") == "PX2BOOT");
-            let started = !pixel || partitions.iter().any(|p| text(p, "VolumeName") == "TORTOS");
+            let system = partitions.iter().find_map(|p| system_of(&text(p, "VolumeName")));
+            let started = system.is_none() || partitions.iter().any(|p| text(p, "VolumeName") == "TORTOS");
             let size = info.get("TotalSize").and_then(Value::as_unsigned_integer).unwrap_or(0);
             let mut card = Card {
                 id: id.clone(),
@@ -193,18 +202,24 @@ mod system {
                 books: 0,
                 volume: None,
                 started,
+                trimui: false,
             };
-            // The largest partition is where the games are: TORTOS on a Pixel
-            // 2's card, never its system partition
-            let main = partitions
-                .iter()
-                .max_by_key(|p| p.get("Size").and_then(Value::as_unsigned_integer).unwrap_or(0));
+            // Where the games are: TORTOS on a card with TortOS's own system
+            // (on a Brick card not started yet the largest is its root), else
+            // the largest partition
+            let main = if system.is_some() {
+                partitions.iter().find(|p| text(p, "VolumeName") == "TORTOS")
+            } else {
+                partitions
+                    .iter()
+                    .max_by_key(|p| p.get("Size").and_then(Value::as_unsigned_integer).unwrap_or(0))
+            };
             if let Some(name) = main.map(|p| text(p, "VolumeName")).filter(|n| !n.is_empty()) {
                 card.name = name;
             }
             match main.map(|p| text(p, "MountPoint")).filter(|m| !m.is_empty()) {
-                Some(m) => read_contents(&mut card, Path::new(&m), pixel),
-                None => card.device = pixel.then_some(Device::Pixel2),
+                Some(m) => read_contents(&mut card, Path::new(&m), system),
+                None => card.device = system,
             }
             cards.push(card);
         }
@@ -213,9 +228,10 @@ mod system {
 }
 
 /// Linux: lsblk, which every distribution has, for disks and their
-/// partitions' labels and mount points. A card shows as the Pixel 2's from its
-/// PX2BOOT label even before the desktop mounts it; what is on it can only be
-/// read once it is mounted, which a desktop does by itself.
+/// partitions' labels and mount points. A card shows as the Pixel 2's or the
+/// Brick's from its boot partition's label even before the desktop mounts it;
+/// what is on it can only be read once it is mounted, which a desktop does by
+/// itself.
 #[cfg(target_os = "linux")]
 mod system {
     use super::*;
@@ -281,8 +297,8 @@ mod system {
             if holds_the_system(&parts) {
                 continue;
             }
-            let pixel = parts.iter().any(|p| text(p, "label") == "PX2BOOT");
-            let started = !pixel || parts.iter().any(|p| text(p, "label") == "TORTOS");
+            let system = parts.iter().find_map(|p| system_of(text(p, "label")));
+            let started = system.is_none() || parts.iter().any(|p| text(p, "label") == "TORTOS");
             let model = text(d, "model");
             let mut card = Card {
                 id: text(d, "path").to_string(),
@@ -296,17 +312,22 @@ mod system {
                 books: 0,
                 volume: None,
                 started,
+                trimui: false,
             };
-            // The largest partition is where the games are: TORTOS on a Pixel
-            // 2's card, never its system partition, which a desktop may mount
-            // too (and whose label, rootfs, once named the card)
-            let main = parts.iter().max_by_key(|p| number(p.get("size")));
+            // Where the games are: TORTOS on a card with TortOS's own system,
+            // never its root, which a desktop may mount too (and whose label,
+            // rootfs, once named the card); else the largest partition
+            let main = if system.is_some() {
+                parts.iter().find(|p| text(p, "label") == "TORTOS")
+            } else {
+                parts.iter().max_by_key(|p| number(p.get("size")))
+            };
             if let Some(l) = main.map(|p| text(p, "label")).filter(|l| !l.is_empty()) {
                 card.name = l.to_string();
             }
             match main.map(|p| text(p, "mountpoint")).filter(|m| !m.is_empty()) {
-                Some(m) => read_contents(&mut card, Path::new(m), pixel),
-                None => card.device = pixel.then_some(Device::Pixel2),
+                Some(m) => read_contents(&mut card, Path::new(m), system),
+                None => card.device = system,
             }
             cards.push(card);
         }
@@ -315,7 +336,8 @@ mod system {
 }
 
 /// Windows: the removable drive letters, grouped by the disk they are on, so
-/// a Pixel 2's card (PX2BOOT and TORTOS) shows once. A letter with nothing
+/// a card with TortOS's own system (PX2BOOT or BRICKBOOT, and TORTOS) shows
+/// once. A letter with nothing
 /// readable behind it is an empty slot in a card reader and is skipped.
 #[cfg(windows)]
 mod system {
@@ -412,9 +434,9 @@ mod system {
             if size == 0 {
                 continue;
             }
-            let pixel = volumes.iter().any(|(_, l)| l == "PX2BOOT");
-            let started = !pixel || volumes.iter().any(|(_, l)| l == "TORTOS");
-            let games = volumes.iter().find(|(_, l)| !pixel || l != "PX2BOOT").cloned();
+            let system = volumes.iter().find_map(|(_, l)| system_of(l));
+            let started = system.is_none() || volumes.iter().any(|(_, l)| l == "TORTOS");
+            let games = volumes.iter().find(|(_, l)| system.is_none() || l == "TORTOS").cloned();
             let mut card = Card {
                 id: format!("\\\\.\\PhysicalDrive{disk}"),
                 name: String::new(),
@@ -427,15 +449,17 @@ mod system {
                 books: 0,
                 volume: None,
                 started,
+                trimui: false,
             };
             match games {
                 Some((letter, l)) => {
                     card.name = if l.is_empty() { format!("{letter}:") } else { l };
-                    read_contents(&mut card, Path::new(&format!("{letter}:\\")), pixel);
+                    read_contents(&mut card, Path::new(&format!("{letter}:\\")), system);
                 }
+                // Not started yet: only the boot partition has a letter
                 None => {
-                    card.name = "PX2BOOT".to_string();
-                    card.device = pixel.then_some(Device::Pixel2);
+                    card.name = if system == Some(Device::Brick) { "BRICKBOOT" } else { "PX2BOOT" }.to_string();
+                    card.device = system;
                 }
             }
             cards.push(card);
@@ -455,7 +479,8 @@ mod tests {
 
     fn card() -> Card {
         Card { id: "t".into(), name: String::new(), size_bytes: 0, reader: String::new(),
-               device: None, version: None, games: 0, songs: 0, books: 0, volume: None, started: true }
+               device: None, version: None, games: 0, songs: 0, books: 0, volume: None, started: true,
+               trimui: false }
     }
 
     #[test]
@@ -477,8 +502,9 @@ mod tests {
         write(root.join("Audiobooks/notes.txt"), "").unwrap();
 
         let mut c = card();
-        read_contents(&mut c, &root, true);
+        read_contents(&mut c, &root, Some(Device::Pixel2));
         assert_eq!(c.device, Some(Device::Pixel2));
+        assert!(!c.trimui);
         assert_eq!(c.version.as_deref(), Some("1.4.0"));
         assert_eq!((c.games, c.songs, c.books), (2, 2, 2));
         let _ = fs::remove_dir_all(&root);
@@ -491,9 +517,27 @@ mod tests {
         create_dir_all(root.join("TortOS")).unwrap();
         create_dir_all(root.join(".tmp_update")).unwrap();
         let mut c = card();
-        read_contents(&mut c, &root, false);
+        read_contents(&mut c, &root, None);
         assert_eq!(c.device, Some(Device::Brick));
+        assert!(c.trimui, "TortOS/ beside .tmp_update/ is TrimUI's firmware");
         assert_eq!(c.version, None, "v1.3.0 wrote no VERSION");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_a_native_brick_card() {
+        let root = std::env::temp_dir().join("tortos-installer-cards-native-brick");
+        let _ = fs::remove_dir_all(&root);
+        create_dir_all(root.join("TortOS")).unwrap();
+        write(root.join("TortOS/VERSION"), "1.7.0\n").unwrap();
+        create_dir_all(root.join("Roms/NES")).unwrap();
+        write(root.join("Roms/NES/Contra (USA).nes"), "").unwrap();
+        let mut c = card();
+        read_contents(&mut c, &root, Some(Device::Brick));
+        assert_eq!(c.device, Some(Device::Brick));
+        assert!(!c.trimui);
+        assert_eq!(c.version.as_deref(), Some("1.7.0"));
+        assert_eq!(c.games, 1);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -520,6 +564,31 @@ mod tests {
         // And the strings older lsblk printed
         let old = json.replace("\"rm\":true", "\"rm\":\"1\"").replace("\"size\":62534975488", "\"size\":\"62534975488\"");
         assert_eq!(system::parse(&old).len(), 1);
+    }
+
+    /// A Brick card with its own system, started (TORTOS made by its first
+    /// start) and not, with the desktop mounting its squashfs root as well.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_lsblk_brick() {
+        let started = r#"{"blockdevices": [
+          {"name":"sdb","path":"/dev/sdb","size":63864569856,"rm":true,"hotplug":true,"type":"disk","model":"USB3.0 CRW -SD","label":null,"mountpoint":null,
+           "children":[{"name":"sdb1","path":"/dev/sdb1","size":67108864,"rm":true,"hotplug":true,"type":"part","model":null,"label":"BRICKBOOT","mountpoint":"/media/user/BRICKBOOT"},
+                       {"name":"sdb2","path":"/dev/sdb2","size":268435456,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"mountpoint":"/media/user/disk"},
+                       {"name":"sdb3","path":"/dev/sdb3","size":16777216,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"mountpoint":null},
+                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/nonexistent/TORTOS"}]}
+        ]}"#;
+        let cards = system::parse(started);
+        assert_eq!(cards.len(), 1);
+        assert_eq!((cards[0].name.as_str(), cards[0].started, cards[0].trimui), ("TORTOS", true, false));
+        assert_eq!(cards[0].device, Some(Device::Brick));
+        assert_eq!(cards[0].volume.as_deref(), Some("/nonexistent/TORTOS"), "the games partition, not the root");
+
+        let fresh = started.replace(r#",
+                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/nonexistent/TORTOS"}"#, "");
+        let cards = system::parse(&fresh);
+        assert_eq!((cards[0].started, cards[0].volume.as_deref()), (false, None), "never the root");
+        assert_eq!(cards[0].device, Some(Device::Brick));
     }
 
     /// lsblk output captured on a real machine, parsed: LSBLK_JSON=file
@@ -550,8 +619,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         create_dir_all(&root).unwrap();
         let mut c = card();
-        read_contents(&mut c, &root, false);
+        read_contents(&mut c, &root, None);
         assert_eq!(c.device, None);
+        assert!(!c.trimui);
         let _ = fs::remove_dir_all(&root);
     }
 }

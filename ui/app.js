@@ -20,9 +20,9 @@ function plural(n, one, many) {
 }
 
 // Decimal, as the card's label is: a 64 GB card reads 62.5, not 58.2
-// A Pixel 2 card before its first start has no volume to name it by
+// A card before its first start has no volume to name it by
 function cardName(c) {
-	return c.started ? c.name : "Pixel 2 card";
+	return c.started ? c.name : c.device === "brick" ? "Brick card" : "Pixel 2 card";
 }
 
 function size(bytes) {
@@ -36,7 +36,8 @@ function selected() {
 function describe(card) {
 	if (!card.device) return "No TortOS on this card";
 	if (!card.started) return "TortOS for " + DEVICE[card.device] + ", not started yet: its first start makes room for games";
-	const which = "TortOS " + (card.version || "before 1.4") + " for " + DEVICE[card.device];
+	const which = "TortOS " + (card.version || "before 1.4") + " for " + DEVICE[card.device]
+		+ (card.trimui ? ", on TrimUI's firmware" : "");
 	const counts = [];
 	if (card.games) counts.push(plural(card.games, "game", "games"));
 	if (card.songs) counts.push(plural(card.songs, "song", "songs"));
