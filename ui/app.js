@@ -253,6 +253,12 @@ async function restore() {
 // Writing is the first half of the bar, checking the second
 function progress(p) {
 	const w = state.writing;
+	if (p.phase === "ejecting") {
+		$("working-phase").textContent = "Ejecting the card";
+		$("working-what").textContent = "So it can come out safely.";
+		$("working-cancel").disabled = true;
+		return;
+	}
 	if (p.phase === "downloading") {
 		$("working-bar").style.width = (p.total ? p.done / p.total : 0) * 100 + "%";
 		$("working-phase").textContent = "Downloading " + latestName() + " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
@@ -312,6 +318,12 @@ function finish(f) {
 		$("finished-title").textContent = "That didn't work";
 		head.textContent = f.message || "Something went wrong.";
 		$("finished-what").textContent = "";
+	}
+	// Ejected after a job that finished well, or why not: said first
+	if (f.ok) {
+		$("finished-what").textContent = (f.ejected ? "The card is ejected: you can take it out. "
+			: "Eject the card before taking it out. " + (f.eject_error ? f.eject_error + " " : ""))
+			+ $("finished-what").textContent;
 	}
 	state.writing = null;
 	show("finished");

@@ -33,6 +33,10 @@ struct FinishedEvent {
     message: String,
     /// Where a backup was made, for the screen to say
     backup: Option<String>,
+    /// Whether the card was ejected after a job that finished well, and if
+    /// not, why
+    ejected: bool,
+    eject_error: String,
 }
 
 /// A card, and the backup waiting to go back on it, if any: a started Brick
@@ -261,6 +265,12 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
             }
         };
         let result = run(&card, brick, job, &mut progress, &cancel);
+        // A card that finished well is ejected, ready to take out; one that
+        // didn't stays, to be written again
+        let eject = result.is_ok().then(|| {
+            let _ = app.emit("progress", ProgressEvent { phase: "ejecting", done: 0, total: 0 });
+            device::eject(&card)
+        });
         if let Some(r) = app.try_state::<Running>() {
             *r.0.lock().unwrap() = None;
         }
@@ -269,7 +279,9 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
             Ok(b) => (true, b, String::new()),
             Err(e) => (false, None, e),
         };
-        let _ = app.emit("finished", FinishedEvent { ok, cancelled, message, backup });
+        let ejected = matches!(eject, Some(Ok(())));
+        let eject_error = eject.and_then(Result::err).unwrap_or_default();
+        let _ = app.emit("finished", FinishedEvent { ok, cancelled, message, backup, ejected, eject_error });
     });
     Ok(())
 }

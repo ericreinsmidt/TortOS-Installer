@@ -99,6 +99,21 @@ mod mac {
         }
     }
 
+    /// As Finder's eject. Spotlight often reads a card for a moment after it
+    /// mounts, which makes diskutil refuse: tried for about five seconds.
+    pub fn eject(disk: &str) -> Result<(), String> {
+        for i in 0..6 {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            let out = Command::new("diskutil").args(["eject", disk]).output();
+            if out.is_ok_and(|o| o.status.success()) {
+                return Ok(());
+            }
+        }
+        Err(BUSY.into())
+    }
+
     /// The file descriptor authopen sends over the socket, with SCM_RIGHTS.
     fn receive_fd(sock: &UnixStream) -> io::Result<RawFd> {
         use std::os::unix::io::AsRawFd;
@@ -167,6 +182,31 @@ mod linux {
             }
         }
         Ok(())
+    }
+
+    /// As the desktop's eject, through udisks, as the player: each mounted
+    /// partition unmounted, then the card powered off.
+    pub fn eject(dev: &str) -> Result<(), String> {
+        let udisks = |args: &[&str]| -> Result<bool, String> {
+            Command::new("udisksctl")
+                .args(args)
+                .arg("--no-user-interaction")
+                .output()
+                .map(|o| o.status.success())
+                .map_err(|_| "This computer has no udisksctl to eject it with.".to_string())
+        };
+        for _ in 0..6 {
+            let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+            let mut left = false;
+            for src in mounts.lines().filter_map(|l| l.split_whitespace().next()).filter(|s| is_on(s, dev)) {
+                left |= !udisks(&["unmount", "-b", src])?;
+            }
+            if !left && udisks(&["power-off", "-b", dev])? {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        Err(BUSY.into())
     }
 
     /// The disk itself or one of its partitions: /dev/sdb1, and /dev/mmcblk0p1
@@ -296,12 +336,55 @@ mod win {
         CreateFileW, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_MODE, OPEN_EXISTING,
     };
 
+    fn disk_of(id: &str) -> Result<u32, String> {
+        id.strip_prefix("\\\\.\\PhysicalDrive")
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("Not a disk: {id}"))
+    }
+
+    /// winioctl.h's values, which this version of the windows crate leaves
+    /// out: CTL_CODE(IOCTL_STORAGE_BASE 0x2d, 0x201 and 0x202,
+    /// METHOD_BUFFERED, FILE_READ_ACCESS)
+    const IOCTL_STORAGE_MEDIA_REMOVAL: u32 = 0x002D_4804;
+    const IOCTL_STORAGE_EJECT_MEDIA: u32 = 0x002D_4808;
+
+    /// As Windows' own eject: every volume on the card dismounted (what
+    /// opening it for writing does), then the card let go and ejected from
+    /// its reader.
+    pub fn eject(id: &str) -> Result<(), String> {
+        use windows::Win32::System::IO::DeviceIoControl;
+        let disk = disk_of(id)?;
+        for i in 0..6 {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            let Ok(locks) = windows_volumes::lock(disk) else { continue };
+            let path: Vec<u16> = id.encode_utf16().chain(Some(0)).collect();
+            let Ok(h) = (unsafe {
+                CreateFileW(PCWSTR(path.as_ptr()), FILE_GENERIC_READ.0, FILE_SHARE_MODE(3), None, OPEN_EXISTING,
+                            Default::default(), None)
+            }) else { continue };
+            let mut n = 0u32;
+            // PREVENT_MEDIA_REMOVAL { PreventMediaRemoval: FALSE }
+            let allow = [0u8; 1];
+            let ejected = unsafe {
+                let _ = DeviceIoControl(h, IOCTL_STORAGE_MEDIA_REMOVAL, Some(allow.as_ptr().cast()), 1, None, 0,
+                                        Some(&mut n), None);
+                let ok = DeviceIoControl(h, IOCTL_STORAGE_EJECT_MEDIA, None, 0, None, 0, Some(&mut n), None).is_ok();
+                let _ = windows::Win32::Foundation::CloseHandle(h);
+                ok
+            };
+            drop(locks);
+            if ejected {
+                return Ok(());
+            }
+        }
+        Err(BUSY.into())
+    }
+
     /// `id` is \\.\PhysicalDriveN.
     pub fn open(id: &str) -> Result<DeviceCard, String> {
-        let disk: u32 = id
-            .strip_prefix("\\\\.\\PhysicalDrive")
-            .and_then(|n| n.parse().ok())
-            .ok_or_else(|| format!("Not a disk: {id}"))?;
+        let disk = disk_of(id)?;
         let locks = windows_volumes::lock(disk)?;
         let path: Vec<u16> = id.encode_utf16().chain(Some(0)).collect();
         let h = unsafe {
@@ -339,6 +422,22 @@ pub fn close(card: DeviceCard, id: &str) {
     let _ = std::process::Command::new("diskutil").args(["mountDisk", id]).output();
     let _ = id;
 }
+
+/// The card handed back for taking out, once a job has finished well: what a
+/// player would otherwise have to remember to do. Run in the window, as the
+/// player, on every system. A card something still has open after a few tries
+/// is left, and the error says so.
+pub fn eject(id: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return mac::eject(id);
+    #[cfg(target_os = "linux")]
+    return linux::eject(id);
+    #[cfg(windows)]
+    return win::eject(id);
+}
+
+/// Why an eject didn't happen, after a few tries
+const BUSY: &str = "Something on this computer still has the card open.";
 
 /// The card for writing. On Linux only the helper, running as root, calls it.
 pub fn open(id: &str) -> Result<DeviceCard, String> {
