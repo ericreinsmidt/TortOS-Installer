@@ -2,6 +2,7 @@
 // `--write` it is the helper instead, with no window (install.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backup;
 mod cards;
 mod device;
 mod image;
@@ -30,13 +31,49 @@ struct FinishedEvent {
     ok: bool,
     cancelled: bool,
     message: String,
+    /// Where a backup was made, for the screen to say
+    backup: Option<String>,
+}
+
+/// A card, and the backup waiting to go back on it, if any: a started Brick
+/// card on its own system, the size of a card that was moved over.
+#[derive(serde::Serialize)]
+struct CardView {
+    #[serde(flatten)]
+    card: cards::Card,
+    backup: Option<backup::Pending>,
 }
 
 /// The cards in this computer and what is on each. Asks the system for its
 /// disks, which takes a moment, so it runs off the window's thread.
 #[tauri::command]
-async fn list_cards() -> Vec<cards::Card> {
-    tauri::async_runtime::spawn_blocking(cards::list).await.unwrap_or_default()
+async fn list_cards() -> Vec<CardView> {
+    let list = || {
+        let folder = backup::folder();
+        cards::list()
+            .into_iter()
+            .map(|card| {
+                let waiting = card.device == Some(cards::Device::Brick) && card.started && !card.trimui;
+                let backup = folder.as_deref().filter(|_| waiting).and_then(|f| backup::pending(f, card.size_bytes));
+                CardView { card, backup }
+            })
+            .collect()
+    };
+    tauri::async_runtime::spawn_blocking(list).await.unwrap_or_default()
+}
+
+/// How much a backup of this card's saves, settings and BIOS files would be,
+/// and where it would go.
+#[tauri::command]
+async fn backup_plan(card: String) -> Result<(u64, String), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = cards::list().into_iter().find(|c| c.id == card).ok_or("The card isn't there anymore.")?;
+        let volume = found.volume.ok_or("The card isn't mounted. Take it out and put it back in.")?;
+        let folder = backup::folder().ok_or("This computer has no Documents or home folder for the backup.")?;
+        Ok((backup::size(std::path::Path::new(&volume))?, folder.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// TortOS's latest version, for the screen to say what it installs.
@@ -77,6 +114,65 @@ fn local_release(brick: bool) -> Option<PathBuf> {
     std::env::var_os(if brick { "TORTOS_BRICK_IMAGE" } else { "TORTOS_IMAGE" }).map(PathBuf::from)
 }
 
+/// What the window asked for
+#[derive(Clone)]
+enum Job {
+    Write(install::Action),
+    /// A Brick card on TrimUI's firmware to the Brick's own system: its saves,
+    /// settings and BIOS files backed up into a folder of this name, then a
+    /// fresh install
+    Move(String),
+    /// A backup put back on the card
+    Restore,
+}
+
+fn find(card_id: &str) -> Result<cards::Card, String> {
+    cards::list()
+        .into_iter()
+        .find(|c| c.id == card_id)
+        .ok_or_else(|| "The card isn't there anymore. Put it back in and choose it again.".into())
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// The job, once the card is found again. Returns where a backup was made.
+fn run(
+    card_id: &str,
+    brick: bool,
+    job: Job,
+    progress: &mut dyn FnMut(writer::Progress),
+    cancel: &AtomicBool,
+) -> Result<Option<String>, String> {
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    match job {
+        Job::Write(action) => write(card_id, brick, action, progress, cancel).map(|_| None),
+        Job::Move(label) => {
+            let card = find(card_id)?;
+            if !brick || !card.trimui {
+                return Err("Only a Brick card on TrimUI's firmware is moved over.".into());
+            }
+            let volume = card.volume.ok_or("The card isn't mounted. Take it out and put it back in.")?;
+            let folder = backup::folder().ok_or("This computer has no Documents or home folder for the backup.")?;
+            let made = backup::back_up(std::path::Path::new(&volume), &folder, &label, card.size_bytes, now(),
+                                       progress, &cancelled)?;
+            let shown = made.to_string_lossy().into_owned();
+            write(card_id, true, install::Action::Fresh, progress, cancel)
+                .map(|_| Some(shown.clone()))
+                .map_err(|e| if e == "cancelled" { e } else { format!("{e} Your saves and settings are in {shown}.") })
+        }
+        Job::Restore => {
+            let card = find(card_id)?;
+            let volume = card.volume.ok_or("The card isn't mounted. Take it out and put it back in.")?;
+            let folder = backup::folder().ok_or("No backup folder on this computer.")?;
+            let waiting = backup::pending(&folder, card.size_bytes).ok_or("There is no backup waiting for this card.")?;
+            backup::restore(std::path::Path::new(&waiting.path), std::path::Path::new(&volume), progress, &cancelled)
+                .map(|_| None)
+        }
+    }
+}
+
 /// The write, once the card is found again: it must still be there, and an
 /// update must be onto that device's TortOS, on its own system: a Brick card
 /// on TrimUI's firmware only moves over by a fresh install. The release is
@@ -88,10 +184,7 @@ fn write(
     progress: &mut dyn FnMut(writer::Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let card = cards::list()
-        .into_iter()
-        .find(|c| c.id == card_id)
-        .ok_or("The card isn't there anymore. Put it back in and choose it again.")?;
+    let card = find(card_id)?;
     let device = if brick { cards::Device::Brick } else { cards::Device::Pixel2 };
     if action == install::Action::Update && card.device != Some(device) {
         return Err("This card doesn't have that device's TortOS on it to update.".into());
@@ -121,18 +214,25 @@ fn write(
     result
 }
 
-/// Starts writing; progress and the end arrive as "progress" and "finished"
-/// events.
+/// Starts a job; progress and the end arrive as "progress" and "finished"
+/// events. `action` is update, fresh, move (with `label`, the backup folder's
+/// name, made by the page in the computer's own time) or restore.
 #[tauri::command]
-fn start(app: AppHandle, running: State<Running>, card: String, device: String, action: String) -> Result<(), String> {
+fn start(app: AppHandle, running: State<Running>, card: String, device: String, action: String,
+         label: Option<String>) -> Result<(), String> {
     let brick = match device.as_str() {
         "brick" => true,
         "pixel2" => false,
         _ => return Err("Unknown device".into()),
     };
-    let action = match install::Action::parse(&action) {
-        Some(a @ (install::Action::Update | install::Action::Fresh)) => a,
-        _ => return Err("Unknown action".into()),
+    let job = match (action.as_str(), label) {
+        ("move", Some(l)) if !l.is_empty() && l.len() <= 40
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-') => Job::Move(l),
+        ("restore", _) => Job::Restore,
+        (a, _) => match install::Action::parse(a) {
+            Some(a @ (install::Action::Update | install::Action::Fresh)) => Job::Write(a),
+            _ => return Err("Unknown action".into()),
+        },
     };
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -150,6 +250,7 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
                 writer::Progress::Downloading { done, total } => ("downloading", done, total),
                 writer::Progress::Writing { done, total } => ("writing", done, total),
                 writer::Progress::Checking { done, total } => ("checking", done, total),
+                writer::Progress::Copying { done, total } => ("copying", done, total),
             };
             // A new phase always gets through: the screen tells a stop before
             // anything was written from one after
@@ -159,16 +260,16 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
                 last_phase = phase;
             }
         };
-        let result = write(&card, brick, action, &mut progress, &cancel);
+        let result = run(&card, brick, job, &mut progress, &cancel);
         if let Some(r) = app.try_state::<Running>() {
             *r.0.lock().unwrap() = None;
         }
         let cancelled = matches!(&result, Err(e) if e == "cancelled");
-        let _ = app.emit("finished", FinishedEvent {
-            ok: result.is_ok(),
-            cancelled,
-            message: result.err().unwrap_or_default(),
-        });
+        let (ok, backup, message) = match result {
+            Ok(b) => (true, b, String::new()),
+            Err(e) => (false, None, e),
+        };
+        let _ = app.emit("finished", FinishedEvent { ok, cancelled, message, backup });
     });
     Ok(())
 }
@@ -188,7 +289,8 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(Running::default())
-        .invoke_handler(tauri::generate_handler![list_cards, latest_tortos, newer_installer, open_installer_releases, start, cancel])
+        .invoke_handler(tauri::generate_handler![list_cards, backup_plan, latest_tortos, newer_installer,
+                                                 open_installer_releases, start, cancel])
         .run(tauri::generate_context!())
         .expect("TortOS Installer could not start");
 }

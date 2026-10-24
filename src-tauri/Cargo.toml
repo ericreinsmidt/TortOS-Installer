@@ -20,6 +20,9 @@ lzma-rust2 = { version = "0.20", default-features = false, features = ["std", "x
 # to install alongside on Linux
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.11"
+# Where a backup goes: the computer's Documents, wherever the system keeps it
+# (Windows may have it in OneDrive)
+dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

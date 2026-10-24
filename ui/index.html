@@ -36,6 +36,13 @@
 			<select id="card-pick" aria-label="Card" hidden></select>
 		</div>
 
+		<!-- A card moved over from TrimUI's firmware, back after its first start -->
+		<div class="panel restore" id="restore" hidden>
+			<p class="big" id="restore-head"></p>
+			<p>They go back where they were, and stay on this computer too.</p>
+			<button class="go" id="restore-go">Put them back</button>
+		</div>
+
 		<h2>What to do</h2>
 		<div class="pair" data-group="action">
 			<button class="choice" data-value="update"><b>Update</b><span id="update-what">Keeps the games, music and saves on the card.</span></button>
@@ -50,10 +57,14 @@
 
 	<!-- One more step before erasing a card -->
 	<section id="confirm" hidden>
-		<h2>Fresh install</h2>
+		<h2 id="confirm-title">Fresh install</h2>
 		<div class="panel">
 			<p class="big">Erase <span id="confirm-card"></span> and install TortOS for <span id="confirm-device"></span>?</p>
-			<p>Everything on it goes: games, music, saves.</p>
+			<p id="confirm-what">Everything on it goes: games, music, saves.</p>
+			<!-- Moving a Brick card from TrimUI's firmware: what is kept, and what is the player's to copy -->
+			<p id="confirm-backup" hidden></p>
+			<p class="yours" id="confirm-yours" hidden></p>
+			<label class="check" id="confirm-check-row" hidden><input type="checkbox" id="confirm-check"> I've copied my games, music and audiobooks</label>
 		</div>
 		<footer class="row">
 			<button class="plain" id="confirm-back">Cancel</button>

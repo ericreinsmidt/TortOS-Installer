@@ -36,6 +36,10 @@ it, then offers what fits:
 - **Update** a card that already has TortOS: the newest TortOS goes on, and
   the games, music, saves and settings stay.
 - **Fresh install** on any card: it is erased, and TortOS goes on.
+- **A Brick card on TrimUI's firmware** moves to the Brick's own system with a
+  fresh install: its saves, settings and BIOS files are kept on the computer
+  and put back after the Brick's first start; games, music and audiobooks are
+  yours to copy first.
 
 TortOS is downloaded from its latest release on GitHub and checked against
 the release's checksums before anything is written, and everything written is

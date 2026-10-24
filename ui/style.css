@@ -19,6 +19,8 @@
 
 * { box-sizing: border-box; }
 html { background: var(--ground); }
+/* Hidden wins over a class's own display (.panel's grid, .check's flex) */
+[hidden] { display: none !important; }
 body {
 	margin: 0;
 	color: var(--text);
@@ -139,3 +141,8 @@ footer.row { flex-direction: row; align-items: center; justify-content: space-be
 .plain:hover { border-color: var(--dim); }
 .plain:disabled { opacity: .4; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .bar > div { transition: none; } }
+.panel .yours { color: var(--text); }
+.check { display: flex; align-items: center; gap: 10px; font-size: 15px; cursor: pointer; }
+.check input { width: 18px; height: 18px; accent-color: var(--bad); }
+.restore { margin-top: 14px; border-color: var(--green); }
+.restore .go { justify-self: start; }

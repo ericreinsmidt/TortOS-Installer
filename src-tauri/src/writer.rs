@@ -197,6 +197,8 @@ pub enum Progress {
     Downloading { done: u64, total: u64 },
     Writing { done: u64, total: u64 },
     Checking { done: u64, total: u64 },
+    /// A backup made or put back, each file read back as it goes
+    Copying { done: u64, total: u64 },
 }
 
 /// The image, from its first byte, as many times as asked.

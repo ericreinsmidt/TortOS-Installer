@@ -91,8 +91,9 @@ function render() {
 		b.classList.toggle("on", b.dataset.value === state.action);
 
 	const fresh = state.action === "fresh";
+	const moving = fresh && card && card.trimui && state.device === "brick";
 	const go = $("go");
-	go.textContent = fresh ? "Erase and install" : "Update card";
+	go.textContent = moving ? "Move to TortOS's own system" : fresh ? "Erase and install" : "Update card";
 	go.classList.toggle("erase", fresh);
 	go.disabled = !card || !state.device;
 	const already = !fresh && card && state.latest && card.version === state.latest;
@@ -100,7 +101,26 @@ function render() {
 		: !state.device ? "Choose the device this card is for."
 		: state.latestError && !state.latest ? "GitHub can't be reached right now. TortOS is downloaded from there."
 		: already ? "This card already has " + latestName() + ": updating writes it again."
+		: moving ? latestName() + " \u00b7 The card is erased. Your saves and settings are kept on this computer and put back after."
 		: latestName() + " \u00b7 " + (fresh ? "Everything on the card goes: games, music, saves." : "Nothing on the card is erased.");
+
+	// A card moved over, back after its first start, with its saves and
+	// settings waiting on this computer
+	const waiting = card && card.backup;
+	$("restore").hidden = !waiting;
+	if (waiting) $("restore-head").textContent = "Your saves and settings from " + when(card.backup.made) + " are ready to go back on this card.";
+}
+
+// A backup's time, in this computer's own time
+function when(seconds) {
+	return new Date(seconds * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+// The backup folder's name, in this computer's own time: Brick 2026-10-24 1405
+function backupLabel() {
+	const d = new Date();
+	const two = (n) => String(n).padStart(2, "0");
+	return "Brick " + d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) + " " + two(d.getHours()) + two(d.getMinutes());
 }
 
 // A new card, or a different one picked: take its device and the action it
@@ -153,30 +173,53 @@ function show(name) {
 
 const MB = (n) => Math.round(n / 1e6);
 
-function begin() {
+async function begin() {
 	const card = selected();
 	if (!card || !state.device) return;
-	if (state.action === "fresh") {
-		$("confirm-card").textContent = cardName(card) + " \u00b7 " + size(card.size_bytes);
-		$("confirm-device").textContent = DEVICE[state.device];
-		show("confirm");
-	} else {
-		write();
+	if (state.action !== "fresh") return write();
+	const moving = card.trimui && state.device === "brick";
+	$("confirm-title").textContent = moving ? "Move to TortOS's own system" : "Fresh install";
+	$("confirm-card").textContent = cardName(card) + " \u00b7 " + size(card.size_bytes);
+	$("confirm-device").textContent = DEVICE[state.device];
+	$("confirm-what").textContent = moving
+		? "This erases the whole card: TortOS's own system takes the place of TrimUI's firmware."
+		: "Everything on it goes: games, music, saves.";
+	const yours = [];
+	if (card.games) yours.push(plural(card.games, "game", "games"));
+	if (card.songs) yours.push(plural(card.songs, "song", "songs"));
+	if (card.books) yours.push(plural(card.books, "audiobook", "audiobooks"));
+	$("confirm-backup").hidden = !moving;
+	$("confirm-yours").hidden = !moving || !yours.length;
+	$("confirm-check-row").hidden = !moving || !yours.length;
+	$("confirm-check").checked = false;
+	state.planFailed = false;
+	$("confirm-go").textContent = moving ? "Back up and erase" : "Erase and install";
+	$("confirm-go").disabled = moving && yours.length > 0;
+	if (moving) {
+		$("confirm-backup").textContent = "Finding what to back up\u2026";
+		$("confirm-yours").textContent = "Copy these to your computer yourself before going on: " + yours.join(", ") + ". They are erased with the card.";
+		invoke("backup_plan", { card: card.id }).then(([bytes, folder]) => {
+			$("confirm-backup").textContent = "Your saves, settings and BIOS files (" + MB(bytes) + " MB) are copied to "
+				+ folder + " first, and put back after the Brick's first start.";
+		}, (e) => { $("confirm-backup").textContent = String(e); state.planFailed = true; $("confirm-go").disabled = true; });
 	}
+	show("confirm");
 }
 
 async function write() {
 	const card = selected();
-	state.writing = { card, device: state.device, action: state.action };
-	$("working-title").textContent = state.action === "fresh" ? "Installing TortOS" : "Updating the card";
+	const moving = state.action === "fresh" && card.trimui && state.device === "brick";
+	const action = moving ? "move" : state.action;
+	state.writing = { card, device: state.device, action };
+	$("working-title").textContent = moving ? "Moving to TortOS's own system" : state.action === "fresh" ? "Installing TortOS" : "Updating the card";
 	const local = state.latest && state.latest.startsWith("from ");
-	$("working-phase").textContent = !local ? "Getting " + latestName() : "Opening the card";
-	$("working-what").textContent = "Your computer may ask for your password.";
+	$("working-phase").textContent = moving ? "Backing up" : !local ? "Getting " + latestName() : "Opening the card";
+	$("working-what").textContent = moving ? WRITING.move : "Your computer may ask for your password.";
 	$("working-bar").style.width = "0";
 	$("working-cancel").disabled = false;
 	show("working");
 	try {
-		await invoke("start", { card: card.id, device: state.device, action: state.action });
+		await invoke("start", { card: card.id, device: state.device, action, label: moving ? backupLabel() : null });
 	} catch (e) {
 		finish({ ok: false, cancelled: false, message: String(e) });
 	}
@@ -186,7 +229,26 @@ async function write() {
 const WRITING = {
 	fresh: "TortOS and plastron, the whole card.",
 	update: "TortOS and plastron. The games, music and saves stay.",
+	move: "Your saves, settings and BIOS files, to this computer: each file read back.",
+	restore: "Your saves, settings and BIOS files, back onto the card: each file read back.",
 };
+
+async function restore() {
+	const card = selected();
+	if (!card || !card.backup) return;
+	state.writing = { card, device: "brick", action: "restore" };
+	$("working-title").textContent = "Putting back your saves and settings";
+	$("working-phase").textContent = "Putting back";
+	$("working-what").textContent = WRITING.restore;
+	$("working-bar").style.width = "0";
+	$("working-cancel").disabled = false;
+	show("working");
+	try {
+		await invoke("start", { card: card.id, device: "brick", action: "restore", label: null });
+	} catch (e) {
+		finish({ ok: false, cancelled: false, message: String(e) });
+	}
+}
 
 // Writing is the first half of the bar, checking the second
 function progress(p) {
@@ -197,21 +259,39 @@ function progress(p) {
 		$("working-what").textContent = "From GitHub, then checked against the release's checksums.";
 		return;
 	}
-	w.wrote = true;
 	const part = p.total ? p.done / p.total : 0;
+	if (p.phase === "copying") {
+		// Before a move's write: nothing on the card is changed yet
+		if (w.action === "restore") w.wrote = true;
+		$("working-bar").style.width = part * 100 + "%";
+		$("working-phase").textContent = (w.action === "restore" ? "Putting back" : "Backing up")
+			+ " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
+		$("working-what").textContent = WRITING[w.action];
+		return;
+	}
+	w.wrote = true;
 	$("working-bar").style.width = ((p.phase === "checking" ? 0.5 : 0) + part / 2) * 100 + "%";
 	$("working-phase").textContent = (p.phase === "checking" ? "Checking what was written" : "Writing")
 		+ " \u00b7 " + MB(p.done) + " of " + MB(p.total) + " MB";
 	$("working-what").textContent = p.phase === "checking"
 		? "Reading it all back, to be sure the card holds what was written."
-		: WRITING[w.action];
+		: WRITING[w.action === "move" ? "fresh" : w.action];
 }
 
 function finish(f) {
 	const w = state.writing || {};
 	const head = $("finished-head");
 	head.classList.toggle("bad", !f.ok);
-	if (f.ok) {
+	if (f.ok && w.action === "move") {
+		$("finished-title").textContent = "Done";
+		head.textContent = latestName() + " is on the card. Your saves and settings are in " + f.backup + ".";
+		$("finished-what").textContent = "Put the card in the Brick and turn it on. When it reaches the shelf, turn it off "
+			+ "and put the card back in this computer: your saves and settings go back on then.";
+	} else if (f.ok && w.action === "restore") {
+		$("finished-title").textContent = "Done";
+		head.textContent = "Your saves and settings are back on the card.";
+		$("finished-what").textContent = "Put it in the Brick and turn it on. The backup stays on this computer until you delete it.";
+	} else if (f.ok) {
 		$("finished-title").textContent = "Done";
 		head.textContent = w.action === "fresh" ? latestName() + " is on the card." : "The card is updated to " + latestName() + ".";
 		$("finished-what").textContent = "Put it in " + DEVICE[w.device] + " and turn it on."
@@ -223,7 +303,9 @@ function finish(f) {
 	} else if (f.cancelled) {
 		$("finished-title").textContent = "Stopped";
 		head.textContent = "The write was stopped partway.";
-		$("finished-what").textContent = w.action === "fresh"
+		$("finished-what").textContent = w.action === "restore"
+			? "Put it back again to finish: the installer offers it until it's done."
+			: w.action !== "update"
 			? "The card has no system on it now. Install again to finish."
 			: "The card won't start until the update is finished: run it again. The games, music and saves are still there.";
 	} else {
@@ -238,6 +320,8 @@ function finish(f) {
 $("go").addEventListener("click", begin);
 $("confirm-back").addEventListener("click", () => show("main"));
 $("confirm-go").addEventListener("click", write);
+$("confirm-check").addEventListener("change", (e) => { $("confirm-go").disabled = !e.target.checked || state.planFailed; });
+$("restore-go").addEventListener("click", restore);
 $("working-cancel").addEventListener("click", () => {
 	$("working-cancel").disabled = true;
 	$("working-phase").textContent = "Stopping";

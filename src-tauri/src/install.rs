@@ -174,8 +174,8 @@ pub fn helper(args: &[String]) -> i32 {
     let mut last_word = "";
     let mut progress = |p: Progress| {
         let (word, done, total) = match p {
-            // The window downloads before the helper starts
-            Progress::Downloading { .. } => return,
+            // The window downloads, and backs up, before the helper starts
+            Progress::Downloading { .. } | Progress::Copying { .. } => return,
             Progress::Writing { done, total } => ("writing", done, total),
             Progress::Checking { done, total } => ("checking", done, total),
         };
