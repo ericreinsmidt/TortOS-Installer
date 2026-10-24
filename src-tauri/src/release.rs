@@ -38,8 +38,8 @@ impl Release {
         self.tag_name.trim_start_matches('v')
     }
 
-    /// The device's card image: TortOS-v1.7.0-brick.img.xz or
-    /// TortOS-v1.7.0-pixel2.img.xz. Releases before 1.7.0 had a zip for the
+    /// The device's card image: TortOS-v2.0.0-brick.img.xz or
+    /// TortOS-v2.0.0-pixel2.img.xz. Releases before 2.0.0 had a zip for the
     /// Brick, for TrimUI's firmware, and none of these
     pub fn asset(&self, brick: bool) -> Result<&Asset, String> {
         let want = format!("TortOS-v{}-{}.img.xz", self.version(), if brick { "brick" } else { "pixel2" });
@@ -203,14 +203,14 @@ mod tests {
     #[test]
     fn picks_each_devices_file() {
         let r = release(
-            "v1.7.0",
-            &["SHA256SUMS", "TortOS-v1.7.0-pixel2-sources.tar", "TortOS-v1.7.0-pixel2.img.xz",
-              "TortOS-v1.7.0-brick-sources.tar", "TortOS-v1.7.0-brick.img.xz"],
+            "v2.0.0",
+            &["SHA256SUMS", "TortOS-v2.0.0-pixel2-sources.tar", "TortOS-v2.0.0-pixel2.img.xz",
+              "TortOS-v2.0.0-brick-sources.tar", "TortOS-v2.0.0-brick.img.xz"],
         );
-        assert_eq!(r.version(), "1.7.0");
-        assert_eq!(r.asset(true).unwrap().name, "TortOS-v1.7.0-brick.img.xz");
-        assert_eq!(r.asset(false).unwrap().name, "TortOS-v1.7.0-pixel2.img.xz");
-        // Before 1.7.0 the Brick's TortOS was a zip, for TrimUI's firmware
+        assert_eq!(r.version(), "2.0.0");
+        assert_eq!(r.asset(true).unwrap().name, "TortOS-v2.0.0-brick.img.xz");
+        assert_eq!(r.asset(false).unwrap().name, "TortOS-v2.0.0-pixel2.img.xz");
+        // Before 2.0.0 the Brick's TortOS was a zip, for TrimUI's firmware
         assert!(release("v1.6.0", &["TortOS-v1.6.0.zip", "TortOS-v1.6.0-pixel2.img.xz"]).asset(true).is_err());
     }
 

@@ -3608,7 +3608,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tortos-installer"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "dirs 6.0.0",
  "libc",

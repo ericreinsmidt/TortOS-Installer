@@ -529,14 +529,14 @@ mod tests {
         let root = std::env::temp_dir().join("tortos-installer-cards-native-brick");
         let _ = fs::remove_dir_all(&root);
         create_dir_all(root.join("TortOS")).unwrap();
-        write(root.join("TortOS/VERSION"), "1.7.0\n").unwrap();
+        write(root.join("TortOS/VERSION"), "2.0.0\n").unwrap();
         create_dir_all(root.join("Roms/NES")).unwrap();
         write(root.join("Roms/NES/Contra (USA).nes"), "").unwrap();
         let mut c = card();
         read_contents(&mut c, &root, Some(Device::Brick));
         assert_eq!(c.device, Some(Device::Brick));
         assert!(!c.trimui);
-        assert_eq!(c.version.as_deref(), Some("1.7.0"));
+        assert_eq!(c.version.as_deref(), Some("2.0.0"));
         assert_eq!(c.games, 1);
         let _ = fs::remove_dir_all(&root);
     }
