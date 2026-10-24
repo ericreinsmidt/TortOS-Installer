@@ -49,11 +49,12 @@ const ROOT: usize = 2;
 
 /// The write itself, with the card opened here. What the helper runs, and
 /// what macOS and Windows run in the window's process. `source` is the card
-/// image.
+/// image; `card_bytes` the card's size, which a GPT is fitted to.
 pub fn write_here(
     card_id: &str,
     action: Action,
     source: &Path,
+    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -64,7 +65,7 @@ pub fn write_here(
     let result = match action {
         Action::Update => crate::writer::update(&mut card, &open, len, PIXEL_SKIP, ROOT, progress, &cancelled).map(|_| ()),
         Action::BrickUpdate => crate::writer::update(&mut card, &open, len, BRICK_SKIP, ROOT, progress, &cancelled).map(|_| ()),
-        Action::Fresh => crate::writer::fresh(&mut card, &open, len, progress, &cancelled),
+        Action::Fresh => crate::writer::fresh(&mut card, &open, len, card_bytes, progress, &cancelled),
     };
     crate::device::close(card, card_id);
     result
@@ -75,13 +76,14 @@ pub fn run(
     card_id: &str,
     action: Action,
     source: &Path,
+    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    return run_helper(card_id, action, source, progress, cancel);
+    return run_helper(card_id, action, source, card_bytes, progress, cancel);
     #[cfg(not(target_os = "linux"))]
-    return write_here(card_id, action, source, progress, cancel);
+    return write_here(card_id, action, source, card_bytes, progress, cancel);
 }
 
 /// Linux: pkexec runs this program again as root with `--write`, which asks
@@ -91,6 +93,7 @@ fn run_helper(
     card_id: &str,
     action: Action,
     source: &Path,
+    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -101,6 +104,7 @@ fn run_helper(
         .arg(&me)
         .args(["--write", action.word(), card_id])
         .arg(source)
+        .arg(card_bytes.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -158,16 +162,17 @@ fn parse_line(line: &str) -> Option<Line> {
     }
 }
 
-/// The helper: `--write update|brick-update|fresh CARD SOURCE`, run as root on
-/// Linux.
+/// The helper: `--write update|brick-update|fresh CARD SOURCE CARD_BYTES`, run
+/// as root on Linux.
 /// Prints progress at most every few hundred milliseconds.
 pub fn helper(args: &[String]) -> i32 {
-    let (Some(action), Some(card), Some(source)) = (
+    let (Some(action), Some(card), Some(source), Some(card_bytes)) = (
         args.first().and_then(|a| Action::parse(a)),
         args.get(1),
         args.get(2).map(PathBuf::from),
+        args.get(3).and_then(|n| n.parse::<u64>().ok()),
     ) else {
-        eprintln!("usage: tortos-installer --write update|brick-update|fresh CARD SOURCE");
+        eprintln!("usage: tortos-installer --write update|brick-update|fresh CARD SOURCE CARD_BYTES");
         return 2;
     };
     let mut last = std::time::Instant::now();
@@ -186,7 +191,7 @@ pub fn helper(args: &[String]) -> i32 {
         }
     };
     let never = AtomicBool::new(false);
-    match write_here(card, action, &source, &mut progress, &never) {
+    match write_here(card, action, &source, card_bytes, &mut progress, &never) {
         Ok(()) => {
             println!("ok");
             0

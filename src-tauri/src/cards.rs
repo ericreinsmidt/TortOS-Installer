@@ -335,10 +335,16 @@ mod system {
     }
 }
 
-/// Windows: the removable drive letters, grouped by the disk they are on, so
-/// a card with TortOS's own system (PX2BOOT or BRICKBOOT, and TORTOS) shows
-/// once. A letter with nothing
-/// readable behind it is an empty slot in a card reader and is skipped.
+/// Windows: the disks whose media is removable (a card in a reader; never a
+/// hard drive, internal or external), each with the drive letters on it, so a
+/// card with TortOS's own system (PX2BOOT or BRICKBOOT, and TORTOS) shows once.
+/// By disk, not by letter: Windows doesn't always mount a card's partitions
+/// (seen 2026-10-24, on a machine where it had before), and a blank card, or
+/// one an interrupted install left without a table, has no readable volume at
+/// all. Either way the card is still listed. A card whose data partitions have
+/// no letters gets them, once each time it goes in, as Windows would have
+/// given them: the installer reads what is on a card through its letters, and
+/// a move and a restore copy files through them.
 #[cfg(windows)]
 mod system {
     use super::*;
@@ -346,13 +352,15 @@ mod system {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, FILE_FLAGS_AND_ATTRIBUTES,
+        CreateFileW, GetLogicalDrives, GetVolumeInformationW, FILE_FLAGS_AND_ATTRIBUTES,
         FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Ioctl::{IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_STORAGE_GET_DEVICE_NUMBER};
     use windows::Win32::System::IO::DeviceIoControl;
 
-    const DRIVE_REMOVABLE: u32 = 2;
+    /// CTL_CODE(IOCTL_STORAGE_BASE 0x2d, 0x500, METHOD_BUFFERED,
+    /// FILE_ANY_ACCESS): winioctl.h's value
+    const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D_1400;
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(Some(0)).collect()
@@ -411,37 +419,105 @@ mod system {
         Some(String::from_utf16_lossy(&name[..len]))
     }
 
-    pub fn list() -> Vec<Card> {
+    /// Whether the disk's media is removable, and the reader's name, from
+    /// STORAGE_DEVICE_DESCRIPTOR: RemovableMedia at byte 10, the product's
+    /// offset at 16. A card reader says removable; a USB hard drive doesn't.
+    fn describe(disk: u32) -> Option<(bool, String)> {
+        let h = open(&format!("\\\\.\\PhysicalDrive{disk}"))?;
+        // STORAGE_PROPERTY_QUERY: StorageDeviceProperty, PropertyStandardQuery
+        let query = [0u8; 12];
+        let mut out = [0u8; 1024];
+        let mut n = 0u32;
+        let ok = unsafe {
+            DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, Some(query.as_ptr().cast()), 12,
+                            Some(out.as_mut_ptr().cast()), out.len() as u32, Some(&mut n), None)
+        }
+        .is_ok();
+        unsafe { let _ = CloseHandle(h); }
+        if !ok || n < 36 {
+            return None;
+        }
+        let at = u32::from_le_bytes(out[16..20].try_into().unwrap()) as usize;
+        let product = match out.get(at..n as usize) {
+            Some(rest) if at > 0 => {
+                let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+                String::from_utf8_lossy(&rest[..end]).trim().to_string()
+            }
+            _ => String::new(),
+        };
+        Some((out[10] != 0, product))
+    }
+
+    /// Disks the installer has given letters to, once each time a card goes
+    /// in: a disk with no card, or gone, comes off it
+    static MOUNTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+    /// Letters for the card's data partitions that have none, through
+    /// Windows' own storage commands (what Disk Management does): FAT and
+    /// exFAT ones, never the Linux system partitions.
+    fn mount_unlettered(disk: u32) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let script = format!(
+            "Get-Partition -DiskNumber {disk} | Where-Object {{ -not $_.DriveLetter -and \
+             $_.Type -match 'Basic|IFS|FAT' }} | Add-PartitionAccessPath -AssignDriveLetter"
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+
+    /// Every drive letter, by the disk it is on, with its label: None for a
+    /// letter with no readable volume behind it (an unformatted card)
+    fn letters() -> BTreeMap<u32, Vec<(char, Option<String>)>> {
         let bits = unsafe { GetLogicalDrives() };
-        // disk number -> its letters and their labels
-        let mut disks: BTreeMap<u32, Vec<(char, String)>> = BTreeMap::new();
+        let mut disks: BTreeMap<u32, Vec<(char, Option<String>)>> = BTreeMap::new();
         for i in 0..26u8 {
             if bits & (1 << i) == 0 {
                 continue;
             }
             let letter = (b'A' + i) as char;
-            let root = wide(&format!("{letter}:\\"));
-            if unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } != DRIVE_REMOVABLE {
-                continue;
+            if let Some(disk) = disk_number(letter) {
+                disks.entry(disk).or_default().push((letter, label(letter)));
             }
-            let (Some(disk), Some(l)) = (disk_number(letter), label(letter)) else { continue };
-            disks.entry(disk).or_default().push((letter, l));
         }
+        disks
+    }
+
+    pub fn list() -> Vec<Card> {
+        let mut letters = letters();
+        let mut mounted = MOUNTED.lock().unwrap();
         let mut cards = Vec::new();
-        for (disk, volumes) in disks {
-            // An empty slot answers for its letter but has no size: no card
+        for disk in 0..32u32 {
+            let Some((removable, product)) = describe(disk) else {
+                mounted.retain(|&d| d != disk);
+                continue;
+            };
+            // An empty slot in a reader answers, but has no size: no card
             let size = disk_size(disk);
-            if size == 0 {
+            if !removable || size == 0 {
+                mounted.retain(|&d| d != disk);
                 continue;
             }
+            if !mounted.contains(&disk) {
+                mounted.push(disk);
+                mount_unlettered(disk);
+                letters = self::letters();
+            }
+            let volumes: Vec<(char, String)> = letters
+                .get(&disk)
+                .map(|v| v.iter().filter_map(|(l, name)| Some((*l, name.clone()?))).collect())
+                .unwrap_or_default();
             let system = volumes.iter().find_map(|(_, l)| system_of(l));
             let started = system.is_none() || volumes.iter().any(|(_, l)| l == "TORTOS");
             let games = volumes.iter().find(|(_, l)| system.is_none() || l == "TORTOS").cloned();
+            let reader = if product.is_empty() { format!("Removable drive {disk}") } else { product };
             let mut card = Card {
                 id: format!("\\\\.\\PhysicalDrive{disk}"),
-                name: String::new(),
+                name: reader.clone(),
                 size_bytes: size,
-                reader: format!("Removable drive {disk}"),
+                reader,
                 device: None,
                 version: None,
                 games: 0,
@@ -456,11 +532,9 @@ mod system {
                     card.name = if l.is_empty() { format!("{letter}:") } else { l };
                     read_contents(&mut card, Path::new(&format!("{letter}:\\")), system);
                 }
-                // Not started yet: only the boot partition has a letter
-                None => {
-                    card.name = if system == Some(Device::Brick) { "BRICKBOOT" } else { "PX2BOOT" }.to_string();
-                    card.device = system;
-                }
+                // Not started yet, or nothing readable on it: what its boot
+                // partition says, if anything
+                None => card.device = system,
             }
             cards.push(card);
         }

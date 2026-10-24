@@ -23,7 +23,11 @@ pub struct DeviceCard {
     /// The card's volumes, locked until the card is closed. After `file`,
     /// so the disk closes before the volumes are let go.
     #[cfg(windows)]
-    _locks: windows_volumes::Locked,
+    locks: windows_volumes::Locked,
+    /// Its disk number, to lock volumes Windows mounts on it while it's
+    /// written
+    #[cfg(windows)]
+    disk: u32,
 }
 
 impl Read for DeviceCard {
@@ -34,6 +38,20 @@ impl Read for DeviceCard {
 
 impl Write for DeviceCard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Windows mounts a volume on the card while it is written, when its
+        // table changes (a fresh install blanks it first, and an unpartitioned
+        // card is one whole-card volume to Windows), then refuses writes inside
+        // it: that volume is locked too, and the write tried again
+        #[cfg(windows)]
+        for _ in 0..5 {
+            match self.file.write(buf) {
+                Err(e) if e.raw_os_error() == Some(5) => {
+                    self.locks.add(windows_volumes::lock_new(self.disk));
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                result => return result,
+            }
+        }
         self.file.write(buf)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -246,6 +264,13 @@ mod windows_volumes {
 
     pub struct Locked(Vec<HANDLE>);
 
+    impl Locked {
+        /// Another set of locks, held with these until the card closes
+        pub fn add(&mut self, mut more: Locked) {
+            self.0.append(&mut more.0);
+        }
+    }
+
     impl Drop for Locked {
         fn drop(&mut self) {
             for &h in &self.0 {
@@ -286,6 +311,16 @@ mod windows_volumes {
 
     /// Every volume on the disk locked or, failing that, dismounted.
     pub fn lock(disk: u32) -> Result<Locked, String> {
+        lock_volumes(disk, true)
+    }
+
+    /// The volumes on the disk not locked already, locked or dismounted: one
+    /// that is ours already won't open again, and is passed over.
+    pub fn lock_new(disk: u32) -> Locked {
+        lock_volumes(disk, false).unwrap_or(Locked(Vec::new()))
+    }
+
+    fn lock_volumes(disk: u32, all: bool) -> Result<Locked, String> {
         let mut locked = Locked(Vec::new());
         let mut name = [0u16; 260];
         let find = unsafe { FindFirstVolumeW(&mut name) }.map_err(|e| format!("Listing volumes: {e}"))?;
@@ -306,6 +341,12 @@ mod windows_volumes {
             });
             if ours {
                 let Some(h) = open(&path, FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0) else {
+                    if !all {
+                        if unsafe { FindNextVolumeW(find, &mut name) }.is_err() {
+                            break Ok(());
+                        }
+                        continue;
+                    }
                     break Err("Couldn't open one of the card's volumes".to_string());
                 };
                 let mut n = 0u32;
@@ -314,7 +355,7 @@ mod windows_volumes {
                 locked.0.push(h);
                 // Either lets the writes in; with neither, Windows would refuse
                 // them partway through
-                if !lock && !dismount {
+                if !lock && !dismount && all {
                     break Err("Couldn't lock the card. Close anything that has it open, and try again.".into());
                 }
             }
@@ -393,7 +434,7 @@ mod win {
         }
         .map_err(|e| format!("Opening the card: {e}"))?;
         let file = unsafe { File::from_raw_handle(h.0) };
-        Ok(DeviceCard { file, _locks: locks })
+        Ok(DeviceCard { file, locks, disk })
     }
 }
 

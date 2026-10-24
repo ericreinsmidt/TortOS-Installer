@@ -16,8 +16,12 @@
 // first thing written is a blank table, so the computer sees no partitions to
 // mount while the rest goes on, and a card that is pulled halfway has no
 // table at all rather than half a system that looks whole. On the Brick the
-// GPT's second copy, at the image's end, is written with the rest; its first
-// boot moves it to the card's end.
+// GPT is fitted to the card as it goes on: as the image has it, it describes a
+// disk the image's size (its second copy at the image's end, its protective
+// MBR covering only the image), which Windows "repairs" when the card goes in,
+// leaving a primary header that points its partition list into the boot
+// loader (seen 2026-10-24). So the protective MBR covers the card, the headers
+// name its last sector, and the second copy goes at the card's end.
 //
 // Both read everything back against a second pass of the image: no checksum
 // to trust, and a mismatch says where it is. Everything here works on any
@@ -108,6 +112,81 @@ fn table_of(head: &[u8]) -> Option<Vec<Option<Partition>>> {
     } else {
         partitions(head).map(|p| p.to_vec())
     }
+}
+
+/// CRC-32 as the GPT uses it (IEEE, reflected), for its headers and list.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// A GPT image's first sectors fitted to a card of `card_bytes`, and the
+/// second copy for the card's end: the partition list, then the header, from
+/// the returned offset. Also where the image's own second header was, to clear.
+fn fit_gpt(head: &[u8], card_bytes: u64) -> Result<(Vec<u8>, u64, Vec<u8>, u64), String> {
+    let u64_at = |h: &[u8], o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
+    let u32_at = |h: &[u8], o: usize| u32::from_le_bytes(h[o..o + 4].try_into().unwrap());
+    let mut head = head.to_vec();
+    let size = u32_at(&head, 512 + 12) as usize;
+    let list_at = u64_at(&head, 512 + 72);
+    let list_len = u32_at(&head, 512 + 80) as usize * u32_at(&head, 512 + 84) as usize;
+    if size < 92 || size > 512 || list_at != 2 || 1024 + list_len > head.len() {
+        return Err("The image's partition table isn't laid out as expected".into());
+    }
+    let list = head[1024..1024 + list_len].to_vec();
+    let list_sectors = (list_len as u64).div_ceil(SECTOR);
+    let last = card_bytes / SECTOR - 1;
+    let old_backup = u64_at(&head, 512 + 32);
+    let ends = gpt_partitions(&head).unwrap_or_default().into_iter().flatten().map(|p| p.end()).max().unwrap_or(0);
+    if ends > last - list_sectors {
+        return Err("This card is too small for TortOS.".into());
+    }
+    // Protective MBR: one 0xEE entry from sector 1 over the whole card
+    let cover = (last).min(0xFFFF_FFFF) as u32;
+    head[446 + 12..446 + 16].copy_from_slice(&cover.to_le_bytes());
+    let mut header = head[512..512 + size].to_vec();
+    header[32..40].copy_from_slice(&last.to_le_bytes());
+    header[48..56].copy_from_slice(&(last - list_sectors - 1).to_le_bytes());
+    let sum = |h: &mut Vec<u8>| {
+        h[16..20].fill(0);
+        let c = crc32(h);
+        h[16..20].copy_from_slice(&c.to_le_bytes());
+    };
+    let mut backup = header.clone();
+    sum(&mut header);
+    head[512..512 + size].copy_from_slice(&header);
+    backup[24..32].copy_from_slice(&last.to_le_bytes());
+    backup[32..40].copy_from_slice(&1u64.to_le_bytes());
+    backup[72..80].copy_from_slice(&(last - list_sectors).to_le_bytes());
+    sum(&mut backup);
+    let mut tail = list;
+    tail.resize((list_sectors * SECTOR) as usize, 0);
+    tail.extend_from_slice(&backup);
+    tail.resize(((list_sectors + 1) * SECTOR) as usize, 0);
+    Ok((head, (last - list_sectors) * SECTOR, tail, old_backup * SECTOR))
+}
+
+/// Bytes written at `at`, flushed, and read back.
+fn put_checked(card: &mut dyn Card, at: u64, data: &[u8]) -> Result<(), String> {
+    card.seek(SeekFrom::Start(at)).map_err(|e| format!("Seeking on the card: {e}"))?;
+    card.write_all(data).map_err(|e| format!("Writing the card's table: {e}"))?;
+    card.sync().map_err(|e| format!("Flushing the card: {e}"))?;
+    card.drop_cache().map_err(|e| format!("Clearing the card's cache: {e}"))?;
+    card.seek(SeekFrom::Start(at)).map_err(|e| format!("Seeking on the card: {e}"))?;
+    let mut back = vec![0u8; data.len()];
+    card.read_exact(&mut back).map_err(|e| format!("Reading a partition table: {e}"))?;
+    if back != data {
+        return Err("The card didn't read back its new partition table. The card may be failing: \
+                    try again, or another card."
+            .into());
+    }
+    Ok(())
 }
 
 /// The bytes an update writes, from..to, the same offsets in image and card.
@@ -295,12 +374,13 @@ pub fn update(
 }
 
 /// A fresh install: the whole image, a blank table first and the real one
-/// last (an MBR's sector, or a GPT's 34). `image_len` must be a whole number
-/// of sectors.
+/// last (an MBR's sector, or a GPT's 34, fitted to the card's `card_bytes`).
+/// `image_len` must be a whole number of sectors.
 pub fn fresh(
     card: &mut dyn Card,
     open: OpenImage,
     image_len: u64,
+    card_bytes: u64,
     progress: &mut dyn FnMut(Progress),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
@@ -309,27 +389,29 @@ pub fn fresh(
     }
     let mut head = read_head(&mut *open().map_err(|e| format!("Opening the image: {e}"))?)?;
     table_of(&head).ok_or("The image has no partition table")?;
-    let table = if is_gpt(&head) { HEAD } else { SECTOR as usize };
+    let gpt = is_gpt(&head);
+    let table = if gpt { HEAD } else { SECTOR as usize };
     head.truncate(table);
+    if card_bytes < image_len {
+        return Err("This card is too small for TortOS.".into());
+    }
+    let fitted = if gpt { Some(fit_gpt(&head, card_bytes)?) } else { None };
     // From here the card is changed: the screen hears so first
     progress(Progress::Writing { done: 0, total: image_len - table as u64 });
     card.seek(SeekFrom::Start(0)).map_err(|e| format!("Seeking on the card: {e}"))?;
     card.write_all(&vec![0u8; table]).map_err(|e| format!("Clearing the card's table: {e}"))?;
     card.sync().map_err(|e| format!("Flushing the card: {e}"))?;
     write_span(card, open, table as u64, image_len, progress, cancelled)?;
-    card.seek(SeekFrom::Start(0)).map_err(|e| format!("Seeking on the card: {e}"))?;
-    card.write_all(&head).map_err(|e| format!("Writing the card's table: {e}"))?;
-    card.sync().map_err(|e| format!("Flushing the card: {e}"))?;
-    card.drop_cache().map_err(|e| format!("Clearing the card's cache: {e}"))?;
-    card.seek(SeekFrom::Start(0)).map_err(|e| format!("Seeking on the card: {e}"))?;
-    let mut back = vec![0u8; table];
-    card.read_exact(&mut back).map_err(|e| format!("Reading a partition table: {e}"))?;
-    if back != head {
-        return Err("The card didn't read back its new partition table. The card may be failing: \
-                    try again, or another card."
-            .into());
+    if let Some((fitted_head, tail_at, tail, old_backup)) = fitted {
+        // The image's own second header goes, the card's is written at its
+        // end, and the primary last
+        if old_backup + SECTOR <= image_len && old_backup < tail_at {
+            put_checked(card, old_backup, &[0u8; SECTOR as usize])?;
+        }
+        put_checked(card, tail_at, &tail)?;
+        head = fitted_head;
     }
-    Ok(())
+    put_checked(card, 0, &head)
 }
 
 #[cfg(test)]
@@ -490,7 +572,7 @@ mod tests {
         let new = image(&parts, 3);
         let mut c = card(booted(&image(&parts, 1)));
         let mut seen = Vec::new();
-        fresh(&mut c, &opener(&new), new.len() as u64, &mut |p| seen.push(p), &|| false).unwrap();
+        fresh(&mut c, &opener(&new), new.len() as u64, CARD_LEN as u64, &mut |p| seen.push(p), &|| false).unwrap();
         let after = c.data.into_inner();
         assert_eq!(after[..new.len()], new[..], "the whole image, table included");
         assert!(matches!(seen.last(), Some(Progress::Checking { done, total }) if done == total));
@@ -502,7 +584,7 @@ mod tests {
         let new = image(&parts, 3);
         let mut c = card(booted(&image(&parts, 1)));
         c.fail_after = Some(40_000);
-        assert!(fresh(&mut c, &opener(&new), new.len() as u64, &mut |_| {}, &|| false).is_err());
+        assert!(fresh(&mut c, &opener(&new), new.len() as u64, CARD_LEN as u64, &mut |_| {}, &|| false).is_err());
         assert_eq!(c.data.into_inner()[..512], [0u8; 512], "no table, not a half system");
     }
 
@@ -548,6 +630,13 @@ mod tests {
         let mut h = vec![0u8; 34 * 512];
         h[..512].copy_from_slice(&table(&[Some(Partition { kind: 0xEE, start: 1, sectors: 0xFFFF_FFFF })]));
         h[512..520].copy_from_slice(b"EFI PART");
+        h[512 + 8..512 + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        h[512 + 12..512 + 16].copy_from_slice(&92u32.to_le_bytes());
+        h[512 + 24..512 + 32].copy_from_slice(&1u64.to_le_bytes());
+        // The second copy at the image's end, as genimage puts it
+        h[512 + 32..512 + 40].copy_from_slice(&((G_IMAGE_LEN / 512 - 1) as u64).to_le_bytes());
+        h[512 + 40..512 + 48].copy_from_slice(&64u64.to_le_bytes());
+        h[512 + 48..512 + 56].copy_from_slice(&((G_IMAGE_LEN / 512 - 34) as u64).to_le_bytes());
         h[512 + 72..512 + 80].copy_from_slice(&2u64.to_le_bytes());
         h[512 + 80..512 + 84].copy_from_slice(&128u32.to_le_bytes());
         h[512 + 84..512 + 88].copy_from_slice(&128u32.to_le_bytes());
@@ -638,12 +727,48 @@ mod tests {
         assert!(run_update(&mut c, &pixel).unwrap_err().contains("another kind"));
     }
 
+    /// A GPT header's checksum, recomputed
+    fn header_ok(h: &[u8]) -> bool {
+        let size = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
+        let mut c = h[..size].to_vec();
+        let want = u32::from_le_bytes(c[16..20].try_into().unwrap());
+        c[16..20].fill(0);
+        crc32(&c) == want
+    }
+
     #[test]
-    fn a_brick_fresh_install_writes_the_whole_image_tables_last() {
+    fn a_brick_fresh_install_fits_the_gpt_to_the_card() {
         let new = gpt_image(3);
         let mut c = card(gpt_booted(&gpt_image(1)));
-        fresh(&mut c, &opener(&new), new.len() as u64, &mut |_| {}, &|| false).unwrap();
-        assert_eq!(c.data.into_inner()[..new.len()], new[..], "the whole image, GPT and its copy included");
+        fresh(&mut c, &opener(&new), new.len() as u64, G_CARD_LEN as u64, &mut |_| {}, &|| false).unwrap();
+        let after = c.data.into_inner();
+        let last = (G_CARD_LEN / 512 - 1) as u64;
+        let u64_at = |o: usize| u64::from_le_bytes(after[o..o + 8].try_into().unwrap());
+        assert_eq!(after[34 * 512..G_IMAGE_LEN - 512], new[34 * 512..G_IMAGE_LEN - 512], "the image between");
+        assert_eq!(gpt_partitions(&after[..34 * 512]).unwrap(), vec![Some(G_BOOT), Some(G_ROOT), Some(G_STATE)]);
+        assert!(header_ok(&after[512..]), "the primary's checksum");
+        assert_eq!((u64_at(512 + 32), u64_at(512 + 48), u64_at(512 + 72)), (last, last - 33, 2));
+        assert_eq!(u32::from_le_bytes(after[458..462].try_into().unwrap()), last as u32, "the protective MBR covers the card");
+        let backup = (last as usize) * 512;
+        assert_eq!(&after[backup..backup + 8], b"EFI PART");
+        assert!(header_ok(&after[backup..]), "the second copy's checksum");
+        assert_eq!((u64_at(backup + 24), u64_at(backup + 32), u64_at(backup + 72)), (last, 1, last - 32));
+        assert_eq!(after[(last as usize - 32) * 512..backup], after[1024..34 * 512], "the same list at the end");
+        assert_eq!(after[G_IMAGE_LEN - 512..G_IMAGE_LEN], [0u8; 512], "the image's own second header cleared");
+    }
+
+    #[test]
+    fn crc32_is_the_gpts() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn a_card_smaller_than_the_image_is_refused_before_anything_is_written() {
+        let new = gpt_image(3);
+        let before = gpt_booted(&gpt_image(1));
+        let mut c = card(before.clone());
+        assert!(fresh(&mut c, &opener(&new), new.len() as u64, 200 * 512, &mut |_| {}, &|| false).unwrap_err().contains("too small"));
+        assert!(c.data.into_inner() == before);
     }
 
     #[test]
@@ -651,7 +776,7 @@ mod tests {
         let new = gpt_image(3);
         let mut c = card(gpt_booted(&gpt_image(1)));
         c.fail_after = Some(60_000);
-        assert!(fresh(&mut c, &opener(&new), new.len() as u64, &mut |_| {}, &|| false).is_err());
+        assert!(fresh(&mut c, &opener(&new), new.len() as u64, G_CARD_LEN as u64, &mut |_| {}, &|| false).is_err());
         assert!(c.data.into_inner()[..34 * 512].iter().all(|&b| b == 0), "no MBR and no GPT header");
     }
 

@@ -211,7 +211,7 @@ fn write(
         install::Action::Update if brick => install::Action::BrickUpdate,
         a => a,
     };
-    let result = install::run(card_id, action, &source, progress, cancel);
+    let result = install::run(card_id, action, &source, card.size_bytes, progress, cancel);
     if downloaded {
         let _ = std::fs::remove_file(&source);
     }
