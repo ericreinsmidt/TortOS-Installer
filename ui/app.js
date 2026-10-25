@@ -36,6 +36,9 @@ function selected() {
 function describe(card) {
 	if (!card.device) return "No TortOS on this card";
 	if (!card.started) return "TortOS for " + DEVICE[card.device] + ", not started yet: its first start makes room for games";
+	// A card whose games partition isn't mounted can't be read: said so, not
+	// taken for a TortOS too old to say its version
+	if (!card.volume) return "TortOS for " + DEVICE[card.device] + " · its games partition isn't mounted, so what's on it can't be read";
 	const which = "TortOS " + (card.version || "before 1.4") + " for " + DEVICE[card.device]
 		+ (card.trimui ? ", on TrimUI's firmware" : "");
 	const counts = [];

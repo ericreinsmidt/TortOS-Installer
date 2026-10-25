@@ -230,22 +230,81 @@ mod system {
 /// Linux: lsblk, which every distribution has, for disks and their
 /// partitions' labels and mount points. A card shows as the Pixel 2's or the
 /// Brick's from its boot partition's label even before the desktop mounts it;
-/// what is on it can only be read once it is mounted, which a desktop does by
-/// itself.
+/// what is on it can only be read once it is mounted. A desktop mounts a
+/// card's partitions by itself, or only once one is clicked (Ubuntu 26.04's
+/// live session, 2026-10-24): a card's FAT and exFAT partitions not mounted
+/// are mounted here, once each time it goes in, through udisks, as the desktop
+/// would, without a password, tried again over the next polls while one is
+/// still not mounted (right after a card goes in, lsblk can know a partition a
+/// moment before udisks does, and the first try fails). The installer reads
+/// what is on a card through them, and a move and a restore copy files through
+/// them.
 #[cfg(target_os = "linux")]
 mod system {
     use super::*;
     use serde_json::Value;
     use std::process::Command;
 
-    pub fn list() -> Vec<Card> {
+    fn lsblk() -> Option<String> {
         let out = Command::new("lsblk")
-            .args(["-J", "-b", "-o", "NAME,PATH,SIZE,RM,HOTPLUG,TYPE,MODEL,LABEL,MOUNTPOINT"])
-            .output();
-        match out {
-            Ok(o) if o.status.success() => parse(&String::from_utf8_lossy(&o.stdout)),
-            _ => Vec::new(),
+            .args(["-J", "-b", "-o", "NAME,PATH,SIZE,RM,HOTPLUG,TYPE,MODEL,LABEL,FSTYPE,MOUNTPOINT"])
+            .output()
+            .ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// How many polls have tried to mount a card's partitions since it went
+    /// in, up to TRIES: a card taken out comes off it
+    static MOUNTED: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
+    const TRIES: u32 = 5;
+
+    pub fn list() -> Vec<Card> {
+        let Some(mut json) = lsblk() else { return Vec::new() };
+        let cards = parse(&json);
+        let mut mounted = MOUNTED.lock().unwrap();
+        mounted.retain(|(d, _)| cards.iter().any(|c| &c.id == d));
+        let mut tried = Vec::new();
+        for (disk, part) in unmounted(&json) {
+            let n = mounted.iter().find(|(d, _)| *d == disk).map_or(0, |(_, n)| *n);
+            if n >= TRIES {
+                continue;
+            }
+            let _ = Command::new("udisksctl").args(["mount", "-b", &part, "--no-user-interaction"]).output();
+            if !tried.contains(&disk) {
+                tried.push(disk);
+            }
         }
+        for disk in &tried {
+            match mounted.iter_mut().find(|(d, _)| d == disk) {
+                Some((_, n)) => *n += 1,
+                None => mounted.push((disk.clone(), 1)),
+            }
+        }
+        let tried = !tried.is_empty();
+        if tried {
+            json = lsblk().unwrap_or(json);
+        }
+        parse(&json)
+    }
+
+    /// The FAT and exFAT partitions of the cards parse lists that have no
+    /// mount point: (the card, the partition)
+    pub(super) fn unmounted(json: &str) -> Vec<(String, String)> {
+        let Ok(root) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+        let ids: Vec<String> = parse(json).into_iter().map(|c| c.id).collect();
+        let mut out = Vec::new();
+        for d in root.get("blockdevices").and_then(Value::as_array).into_iter().flatten() {
+            let path = text(d, "path");
+            if !ids.iter().any(|i| i == path) {
+                continue;
+            }
+            for p in d.get("children").and_then(Value::as_array).into_iter().flatten() {
+                if text(p, "mountpoint").is_empty() && matches!(text(p, "fstype"), "vfat" | "exfat") {
+                    out.push((path.to_string(), text(p, "path").to_string()));
+                }
+            }
+        }
+        out
     }
 
     // lsblk's JSON changed over the years: flags and sizes were strings
@@ -272,11 +331,14 @@ mod system {
     }
 
     /// The running system's own disk is never a card: on a Raspberry Pi it is
-    /// an SD card too.
+    /// an SD card too, and a live USB stick's (Ubuntu's, 2026-10-24) is
+    /// removable and mounted at /cdrom and under /var. A disk with any
+    /// partition mounted outside where desktops put removable drives is the
+    /// system's.
     fn holds_the_system(parts: &[Value]) -> bool {
         parts.iter().any(|p| {
             let m = text(p, "mountpoint");
-            m == "/" || m.starts_with("/boot") || m == "[SWAP]"
+            !m.is_empty() && !["/media/", "/run/media/", "/mnt/"].iter().any(|r| m.starts_with(r))
         })
     }
 
@@ -342,8 +404,8 @@ mod system {
 /// (seen 2026-10-24, on a machine where it had before), and a blank card, or
 /// one an interrupted install left without a table, has no readable volume at
 /// all. Either way the card is still listed. A card whose data partitions have
-/// no letters gets them, once each time it goes in, as Windows would have
-/// given them: the installer reads what is on a card through its letters, and
+/// no letters gets them, tried over the first polls after it goes in, as
+/// Windows would have given them: the installer reads what is on a card through its letters, and
 /// a move and a restore copy files through them.
 #[cfg(windows)]
 mod system {
@@ -448,9 +510,10 @@ mod system {
         Some((out[10] != 0, product))
     }
 
-    /// Disks the installer has given letters to, once each time a card goes
-    /// in: a disk with no card, or gone, comes off it
-    static MOUNTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+    /// How many polls have given letters to a disk's partitions since its card
+    /// went in, up to TRIES: a disk with no card, or gone, comes off it
+    static MOUNTED: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+    const TRIES: u32 = 3;
 
     /// Letters for the card's data partitions that have none, through
     /// Windows' own storage commands (what Disk Management does): FAT and
@@ -491,19 +554,29 @@ mod system {
         let mut cards = Vec::new();
         for disk in 0..32u32 {
             let Some((removable, product)) = describe(disk) else {
-                mounted.retain(|&d| d != disk);
+                mounted.retain(|&(d, _)| d != disk);
                 continue;
             };
             // An empty slot in a reader answers, but has no size: no card
             let size = disk_size(disk);
             if !removable || size == 0 {
-                mounted.retain(|&d| d != disk);
+                mounted.retain(|&(d, _)| d != disk);
                 continue;
             }
-            if !mounted.contains(&disk) {
-                mounted.push(disk);
+            // Tried again over the next polls while it has no readable letter:
+            // right after a card goes in, Windows may not have its partitions
+            // ready for the first try
+            let named: Vec<&str> =
+                letters.get(&disk).into_iter().flatten().filter_map(|(_, l)| l.as_deref()).collect();
+            let games_missing = named.iter().any(|l| system_of(l).is_some()) && !named.contains(&"TORTOS");
+            let n = mounted.iter().find(|(d, _)| *d == disk).map_or(0, |(_, n)| *n);
+            if (named.is_empty() || games_missing) && n < TRIES {
                 mount_unlettered(disk);
                 letters = self::letters();
+                match mounted.iter_mut().find(|(d, _)| *d == disk) {
+                    Some((_, n)) => *n += 1,
+                    None => mounted.push((disk, 1)),
+                }
             }
             let volumes: Vec<(char, String)> = letters
                 .get(&disk)
@@ -627,7 +700,7 @@ mod tests {
           {"name":"sdb","path":"/dev/sdb","size":62534975488,"rm":true,"hotplug":true,"type":"disk","model":"USB3.0 CRW -SD","label":null,"mountpoint":null,
            "children":[{"name":"sdb1","path":"/dev/sdb1","size":67108864,"rm":true,"hotplug":true,"type":"part","model":null,"label":"PX2BOOT","mountpoint":null},
                        {"name":"sdb2","path":"/dev/sdb2","size":268435456,"rm":true,"hotplug":true,"type":"part","model":null,"label":"rootfs","mountpoint":"/media/user/rootfs"},
-                       {"name":"sdb3","path":"/dev/sdb3","size":62199431168,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/nonexistent/TORTOS"}]},
+                       {"name":"sdb3","path":"/dev/sdb3","size":62199431168,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/media/nonexistent/TORTOS"}]},
           {"name":"sdc","path":"/dev/sdc","size":0,"rm":true,"hotplug":true,"type":"disk","model":"Card Reader","label":null,"mountpoint":null}
         ]}"#;
         let cards = system::parse(json);
@@ -650,19 +723,54 @@ mod tests {
            "children":[{"name":"sdb1","path":"/dev/sdb1","size":67108864,"rm":true,"hotplug":true,"type":"part","model":null,"label":"BRICKBOOT","mountpoint":"/media/user/BRICKBOOT"},
                        {"name":"sdb2","path":"/dev/sdb2","size":268435456,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"mountpoint":"/media/user/disk"},
                        {"name":"sdb3","path":"/dev/sdb3","size":16777216,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"mountpoint":null},
-                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/nonexistent/TORTOS"}]}
+                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/media/nonexistent/TORTOS"}]}
         ]}"#;
         let cards = system::parse(started);
         assert_eq!(cards.len(), 1);
         assert_eq!((cards[0].name.as_str(), cards[0].started, cards[0].trimui), ("TORTOS", true, false));
         assert_eq!(cards[0].device, Some(Device::Brick));
-        assert_eq!(cards[0].volume.as_deref(), Some("/nonexistent/TORTOS"), "the games partition, not the root");
+        assert_eq!(cards[0].volume.as_deref(), Some("/media/nonexistent/TORTOS"), "the games partition, not the root");
 
         let fresh = started.replace(r#",
-                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/nonexistent/TORTOS"}"#, "");
+                       {"name":"sdb4","path":"/dev/sdb4","size":63508054016,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","mountpoint":"/media/nonexistent/TORTOS"}"#, "");
         let cards = system::parse(&fresh);
         assert_eq!((cards[0].started, cards[0].volume.as_deref()), (false, None), "never the root");
         assert_eq!(cards[0].device, Some(Device::Brick));
+    }
+
+    /// A Brick card whose games partition the desktop hasn't mounted: that one
+    /// is to be mounted, never its Linux system partitions, never another disk
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_partitions_to_mount() {
+        let json = r#"{"blockdevices": [
+          {"name":"sda","path":"/dev/sda","size":512110190592,"rm":false,"hotplug":false,"type":"disk","model":"SSD","label":null,"fstype":null,"mountpoint":null,
+           "children":[{"name":"sda1","path":"/dev/sda1","size":512109142016,"rm":false,"hotplug":false,"type":"part","model":null,"label":null,"fstype":"vfat","mountpoint":null}]},
+          {"name":"sdb","path":"/dev/sdb","size":126437294080,"rm":true,"hotplug":true,"type":"disk","model":"USB3.0 CRW -SD","label":null,"fstype":null,"mountpoint":null,
+           "children":[{"name":"sdb1","path":"/dev/sdb1","size":67108864,"rm":true,"hotplug":true,"type":"part","model":null,"label":"BRICKBOOT","fstype":"vfat","mountpoint":"/media/ubuntu/BRICKBOOT"},
+                       {"name":"sdb2","path":"/dev/sdb2","size":268435456,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"fstype":"squashfs","mountpoint":null},
+                       {"name":"sdb3","path":"/dev/sdb3","size":16777216,"rm":true,"hotplug":true,"type":"part","model":null,"label":null,"fstype":"ext4","mountpoint":null},
+                       {"name":"sdb4","path":"/dev/sdb4","size":126084972544,"rm":true,"hotplug":true,"type":"part","model":null,"label":"TORTOS","fstype":"exfat","mountpoint":null}]}
+        ]}"#;
+        assert_eq!(system::unmounted(json), vec![("/dev/sdb".to_string(), "/dev/sdb4".to_string())]);
+    }
+
+    /// A live USB stick the system runs from is never offered, removable as
+    /// it is; a card and a flash drive mounted where desktops mount them are
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn never_offers_a_live_stick() {
+        let json = r#"{"blockdevices": [
+          {"name":"sda","path":"/dev/sda","size":128043712512,"rm":true,"hotplug":true,"type":"disk","model":"USB stick","label":null,"fstype":null,"mountpoint":null,
+           "children":[{"name":"sda1","path":"/dev/sda1","size":6442450944,"rm":true,"hotplug":true,"type":"part","model":null,"label":"Ubuntu 26.04.1 LTS amd64","fstype":"iso9660","mountpoint":"/cdrom"},
+                       {"name":"sda2","path":"/dev/sda2","size":5242880,"rm":true,"hotplug":true,"type":"part","model":null,"label":"ESP","fstype":"vfat","mountpoint":"/run/media/ubuntu/ESP"},
+                       {"name":"sda4","path":"/dev/sda4","size":121000000000,"rm":true,"hotplug":true,"type":"part","model":null,"label":"writable","fstype":"ext4","mountpoint":"/var/crash"}]},
+          {"name":"sdb","path":"/dev/sdb","size":2021654016,"rm":true,"hotplug":true,"type":"disk","model":"Flash","label":null,"fstype":null,"mountpoint":null,
+           "children":[{"name":"sdb1","path":"/dev/sdb1","size":2019229696,"rm":true,"hotplug":true,"type":"part","model":null,"label":"SYSTEMS","fstype":"exfat","mountpoint":"/run/media/ubuntu/SYSTEMS"}]}
+        ]}"#;
+        let cards = system::parse(json);
+        assert_eq!(cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["/dev/sdb"]);
+        assert!(system::unmounted(json).is_empty(), "nothing of the live stick's is mounted by the installer");
     }
 
     /// lsblk output captured on a real machine, parsed: LSBLK_JSON=file
