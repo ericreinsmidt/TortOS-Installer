@@ -37,6 +37,13 @@ if [ $PUBLISH = 1 ]; then
 	gh release view "v$VERSION" --repo $REPO >/dev/null 2>&1 && stop "$REPO already has a v$VERSION release"
 fi
 
+say "Third-party notices"
+# The crate list is this build's: one that no longer matches would credit
+# crates the apps don't carry, or miss ones they do
+tools/third-party.py > /tmp/tortos-installer-third-party.md
+cmp -s /tmp/tortos-installer-third-party.md THIRD-PARTY.md ||
+	stop "THIRD-PARTY.md doesn't match the build's crates: run tools/third-party.py > THIRD-PARTY.md, check it and commit it"
+
 say "Tests"
 (cd src-tauri && cargo test --quiet)
 
