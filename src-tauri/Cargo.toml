@@ -3,7 +3,7 @@ name = "tortos-installer"
 version = "3.0.0"
 description = "Puts TortOS on a TrimUI Brick or GKD Pixel 2 card, or updates one"
 authors = ["Eric Reinsmidt"]
-license = "MIT"
+license = "GPL-3.0-or-later"
 edition = "2021"
 
 [build-dependencies]

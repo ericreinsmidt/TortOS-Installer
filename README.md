@@ -64,4 +64,5 @@ release from those files.
 The fonts in `ui/fonts` are Josefin Sans (regular, and thin italic for the wordmark), under
 the SIL Open Font License (`ui/fonts/OFL.txt`).
 
-MIT License; see `LICENSE`.
+TortOS Installer is free software under the GNU General Public License, version 3
+or any later version; see `LICENSE`. Versions up to 2.0.0 were MIT.
