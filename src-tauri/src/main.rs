@@ -15,6 +15,39 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Windows' AutoPlay held off while a card is written. Blanking a card's table
+/// makes Windows mount it as one unformatted volume, and AutoPlay then offered
+/// to format it, or opened it and said "The directory name is invalid", in the
+/// middle of an install (seen 2026-10-24). Windows asks the window in front
+/// with the "QueryCancelAutoPlay" message before it shows anything, and an
+/// answer of 1 cancels it: the installer's window answers so while it writes.
+#[cfg(windows)]
+mod autoplay {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+
+    pub static HOLD: AtomicBool = AtomicBool::new(false);
+    static QUERY: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "system" fn answer(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        if msg != 0 && msg == QUERY.load(Ordering::Relaxed) && HOLD.load(Ordering::Relaxed) {
+            return LRESULT(1);
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+
+    /// The window to answer from: called on its own thread
+    pub fn watch(hwnd: isize) {
+        unsafe {
+            QUERY.store(RegisterWindowMessageW(w!("QueryCancelAutoPlay")), Ordering::Relaxed);
+            let _ = SetWindowSubclass(HWND(hwnd as _), Some(answer), 1, 0);
+        }
+    }
+}
+
 /// The write under way, if any: its cancel flag.
 #[derive(Default)]
 struct Running(Mutex<Option<Arc<AtomicBool>>>);
@@ -264,6 +297,8 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
                 last_phase = phase;
             }
         };
+        #[cfg(windows)]
+        autoplay::HOLD.store(true, Ordering::Relaxed);
         let result = run(&card, brick, job, &mut progress, &cancel);
         // A card that finished well is ejected, ready to take out; one that
         // didn't stays, to be written again
@@ -271,6 +306,8 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
             let _ = app.emit("progress", ProgressEvent { phase: "ejecting", done: 0, total: 0 });
             device::eject(&card)
         });
+        #[cfg(windows)]
+        autoplay::HOLD.store(false, Ordering::Relaxed);
         if let Some(r) = app.try_state::<Running>() {
             *r.0.lock().unwrap() = None;
         }
@@ -301,6 +338,13 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(Running::default())
+        .setup(|_app| {
+            #[cfg(windows)]
+            if let Some(Ok(hwnd)) = _app.get_webview_window("main").map(|w| w.hwnd()) {
+                autoplay::watch(hwnd.0 as isize);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![list_cards, backup_plan, latest_tortos, newer_installer,
                                                  open_installer_releases, start, cancel])
         .run(tauri::generate_context!())

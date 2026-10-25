@@ -13,9 +13,12 @@
 // an update cut short is finished by running it again.
 //
 // A FRESH INSTALL writes the whole image, the partition table LAST. The
-// first thing written is a blank table, so the computer sees no partitions to
-// mount while the rest goes on, and a card that is pulled halfway has no
-// table at all rather than half a system that looks whole. On the Brick the
+// first thing written is an empty table, an MBR's signature with no entries,
+// so the computer sees a disk with no partitions to mount while the rest goes
+// on, and a card that is pulled halfway has none rather than half a system
+// that looks whole. Not zeros: Windows takes a card whose first sector is
+// zeros for one whole unformatted volume, mounts it mid-write, offers to
+// format it and refuses the writes inside it (seen 2026-10-24). On the Brick the
 // GPT is fitted to the card as it goes on: as the image has it, it describes a
 // disk the image's size (its second copy at the image's end, its protective
 // MBR covering only the image), which Windows "repairs" when the card goes in,
@@ -399,7 +402,9 @@ pub fn fresh(
     // From here the card is changed: the screen hears so first
     progress(Progress::Writing { done: 0, total: image_len - table as u64 });
     card.seek(SeekFrom::Start(0)).map_err(|e| format!("Seeking on the card: {e}"))?;
-    card.write_all(&vec![0u8; table]).map_err(|e| format!("Clearing the card's table: {e}"))?;
+    let mut empty = vec![0u8; table];
+    empty[510..512].copy_from_slice(&[0x55, 0xAA]);
+    card.write_all(&empty).map_err(|e| format!("Clearing the card's table: {e}"))?;
     card.sync().map_err(|e| format!("Flushing the card: {e}"))?;
     write_span(card, open, table as u64, image_len, progress, cancelled)?;
     if let Some((fitted_head, tail_at, tail, old_backup)) = fitted {
@@ -585,7 +590,8 @@ mod tests {
         let mut c = card(booted(&image(&parts, 1)));
         c.fail_after = Some(40_000);
         assert!(fresh(&mut c, &opener(&new), new.len() as u64, CARD_LEN as u64, &mut |_| {}, &|| false).is_err());
-        assert_eq!(c.data.into_inner()[..512], [0u8; 512], "no table, not a half system");
+        let after = c.data.into_inner();
+        assert_eq!(partitions(&after[..512]), Some([None; 4]), "an empty table, not a half system");
     }
 
     #[test]
@@ -777,7 +783,9 @@ mod tests {
         let mut c = card(gpt_booted(&gpt_image(1)));
         c.fail_after = Some(60_000);
         assert!(fresh(&mut c, &opener(&new), new.len() as u64, G_CARD_LEN as u64, &mut |_| {}, &|| false).is_err());
-        assert!(c.data.into_inner()[..34 * 512].iter().all(|&b| b == 0), "no MBR and no GPT header");
+        let after = c.data.into_inner();
+        assert_eq!(partitions(&after[..512]), Some([None; 4]), "an empty MBR");
+        assert!(gpt_partitions(&after[..34 * 512]).is_none(), "and no GPT header");
     }
 
     /// The Brick's layout as plastron's image has it (2026-10-24): the
