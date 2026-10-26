@@ -46,7 +46,7 @@
 		<h2>What to do</h2>
 		<div class="pair" data-group="action">
 			<button class="choice" data-value="update"><b>Update</b><span id="update-what">Keeps the games, music and saves on the card.</span></button>
-			<button class="choice erase" data-value="fresh"><b>Fresh install</b><span>Erases the whole card and starts over.</span></button>
+			<button class="choice erase" data-value="fresh"><b id="fresh-title">Fresh install</b><span id="fresh-what">Erases the whole card and starts over.</span></button>
 		</div>
 
 		<footer>
@@ -93,6 +93,8 @@
 		</div>
 		<footer class="row">
 			<span></span>
+			<button class="plain" id="finished-show" hidden>Show the card</button>
+			<button class="go" id="finished-eject" hidden>Eject</button>
 			<button class="go" id="finished-back">Back</button>
 		</footer>
 	</section>

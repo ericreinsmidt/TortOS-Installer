@@ -36,14 +36,17 @@ it, then offers what fits:
 - **Update** a card that already has TortOS: the newest TortOS goes on, and
   the games, music, saves and settings stay.
 - **Fresh install** on any card: it is erased, and TortOS goes on.
-- **A Brick card with TortOS 1.x** moves to TortOS 2 with a fresh install:
-  its saves, settings and BIOS files are kept on the computer and put back
-  after the Brick's first start. Games, music and audiobooks are erased with
-  the card, so copy them off first and back on after.
+- **Move to TortOS 2**, in place of Fresh install on a Brick card with
+  TortOS 1.x: its saves, settings and BIOS files are kept on the computer, and
+  when the card comes back after the Brick's first start, the installer offers
+  to put them back. Games, music and audiobooks are erased with the card, so
+  copy them off first; after the put-back the card stays in for them to go
+  back on, and **Show the card** opens it.
 
 TortOS is downloaded from its latest release on GitHub and checked against
 the release's checksums before anything is written, and everything written is
-read back. When it's done, it ejects the card, or says why it couldn't.
+read back. When it's done, it ejects the card, or says why it couldn't; after a
+put-back, **Eject** does it once the games are back on.
 
 Version 3 installs TortOS 2.0.0 and later, for both devices; TortOS 1.x was
 version 2's.

@@ -134,6 +134,9 @@ footer .note { margin: 0; text-align: right; }
 .bar { height: 10px; border-radius: 999px; background: var(--panel-hi); border: 1px solid var(--line); overflow: hidden; }
 .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .2s linear; }
 footer.row { flex-direction: row; align-items: center; justify-content: space-between; }
+/* The Done screen after a put-back: Show the card beside Eject, on the right */
+#finished footer.row { justify-content: flex-end; }
+#finished footer.row span { margin-right: auto; }
 .plain {
 	background: none; border: 1px solid var(--line); color: var(--soft); font: inherit; font-size: 16px;
 	border-radius: 12px; padding: 11px 20px; cursor: pointer;

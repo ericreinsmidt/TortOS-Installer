@@ -54,7 +54,7 @@ function updateBlocked(card) {
 	if (!card) return "Put in a card.";
 	if (!card.device) return "There is no TortOS on this card to update.";
 	if (card.device !== state.device) return "This card has TortOS for " + DEVICE[card.device] + ".";
-	if (card.trimui) return "This card runs TrimUI's firmware: moving it to TortOS's own system erases it.";
+	if (card.trimui) return "This card runs TrimUI's firmware: moving it to TortOS 2 erases it.";
 	return null;
 }
 
@@ -92,11 +92,17 @@ function render() {
 	$("update-what").textContent = blocked || "Keeps the games, music and saves on the card.";
 	for (const b of document.querySelectorAll("[data-group=action] .choice"))
 		b.classList.toggle("on", b.dataset.value === state.action);
+	// A Brick card on TrimUI's firmware has no fresh install of its own: the
+	// same choice moves it, keeping its saves and settings, so it says so
+	const movable = card && card.trimui && state.device === "brick";
+	$("fresh-title").textContent = movable ? "Move to TortOS 2" : "Fresh install";
+	$("fresh-what").textContent = movable ? "Keeps your saves, settings and BIOS files; the rest of the card is erased."
+		: "Erases the whole card and starts over.";
 
 	const fresh = state.action === "fresh";
 	const moving = fresh && card && card.trimui && state.device === "brick";
 	const go = $("go");
-	go.textContent = moving ? "Move to TortOS's own system" : fresh ? "Erase and install" : "Update card";
+	go.textContent = moving ? "Move to TortOS 2" : fresh ? "Erase and install" : "Update card";
 	go.classList.toggle("erase", fresh);
 	go.disabled = !card || !state.device;
 	const already = !fresh && card && state.latest && card.version === state.latest;
@@ -137,10 +143,24 @@ function cardChanged() {
 }
 
 async function refresh() {
-	// Only on the main screen: never asking the system about disks mid-write
-	if (!invoke || state.screen !== "main") return;
+	// On the main screen, and on the Done screen after a move, which waits for
+	// the card to come back from the Brick's first start; never mid-write
+	const awaiting = state.screen === "finished" && state.awaitRestore;
+	if (!invoke || (state.screen !== "main" && !awaiting)) return;
 	let cards;
 	try { cards = await invoke("list_cards"); } catch (_) { return; }
+	if (awaiting) {
+		// The moved card back with its saves and settings waiting: straight to
+		// the main screen, where Put them back is, with no Back to press
+		const back = cards.find((c) => c.backup);
+		if (!back || state.screen !== "finished") return;
+		state.awaitRestore = false;
+		state.cards = cards;
+		state.cardId = back.id;
+		show("main");
+		cardChanged();
+		return;
+	}
 	const before = state.cardId;
 	state.cards = cards;
 	if (!cards.some((c) => c.id === state.cardId)) state.cardId = cards.length ? cards[0].id : null;
@@ -181,11 +201,11 @@ async function begin() {
 	if (!card || !state.device) return;
 	if (state.action !== "fresh") return write();
 	const moving = card.trimui && state.device === "brick";
-	$("confirm-title").textContent = moving ? "Move to TortOS's own system" : "Fresh install";
+	$("confirm-title").textContent = moving ? "Move to TortOS 2" : "Fresh install";
 	$("confirm-card").textContent = cardName(card) + " \u00b7 " + size(card.size_bytes);
 	$("confirm-device").textContent = DEVICE[state.device];
 	$("confirm-what").textContent = moving
-		? "This erases the whole card: TortOS's own system takes the place of TrimUI's firmware."
+		? "This erases the whole card: TortOS 2 brings its own system, in place of TrimUI's firmware."
 		: "Everything on it goes: games, music, saves.";
 	const yours = [];
 	if (card.games) yours.push(plural(card.games, "game", "games"));
@@ -214,7 +234,7 @@ async function write() {
 	const moving = state.action === "fresh" && card.trimui && state.device === "brick";
 	const action = moving ? "move" : state.action;
 	state.writing = { card, device: state.device, action };
-	$("working-title").textContent = moving ? "Moving to TortOS's own system" : state.action === "fresh" ? "Installing TortOS" : "Updating the card";
+	$("working-title").textContent = moving ? "Moving to TortOS 2" : state.action === "fresh" ? "Installing TortOS" : "Updating the card";
 	const local = state.latest && state.latest.startsWith("from ");
 	$("working-phase").textContent = moving ? "Backing up" : !local ? "Getting " + latestName() : "Opening the card";
 	$("working-what").textContent = moving ? WRITING.move : "Your computer may ask for your password.";
@@ -295,11 +315,13 @@ function finish(f) {
 		$("finished-title").textContent = "Done";
 		head.textContent = latestName() + " is on the card. Your saves and settings are in " + f.backup + ".";
 		$("finished-what").textContent = "Put the card in the Brick and turn it on. When it reaches the shelf, turn it off "
-			+ "and put the card back in this computer: your saves and settings go back on then.";
+			+ "and put the card back in this computer, and this window offers to put your saves and settings back.";
 	} else if (f.ok && w.action === "restore") {
+		// The card stays in: the games, music and audiobooks go back on next
 		$("finished-title").textContent = "Done";
 		head.textContent = "Your saves and settings are back on the card.";
-		$("finished-what").textContent = "Put it in the Brick and turn it on. The backup stays on this computer until you delete it.";
+		$("finished-what").textContent = "Now copy your games, music and audiobooks back onto the card: it's TORTOS on this "
+			+ "computer. Then eject it, put it in the Brick and turn it on. The backup stays on this computer until you delete it.";
 	} else if (f.ok) {
 		$("finished-title").textContent = "Done";
 		head.textContent = w.action === "fresh" ? latestName() + " is on the card." : "The card is updated to " + latestName() + ".";
@@ -322,12 +344,18 @@ function finish(f) {
 		head.textContent = f.message || "Something went wrong.";
 		$("finished-what").textContent = "";
 	}
+	const kept = f.ok && w.action === "restore";
+	$("finished-show").hidden = !kept;
+	$("finished-eject").hidden = !kept;
+	$("finished-back").hidden = kept;
+	state.keptCard = kept ? w.card.id : null;
 	// Ejected after a job that finished well, or why not: said first
-	if (f.ok) {
+	if (f.ok && !kept) {
 		$("finished-what").textContent = (f.ejected ? "The card is ejected: you can take it out. "
 			: "Eject the card before taking it out. " + (f.eject_error ? f.eject_error + " " : ""))
 			+ $("finished-what").textContent;
 	}
+	state.awaitRestore = f.ok && w.action === "move";
 	state.writing = null;
 	show("finished");
 }
@@ -342,7 +370,25 @@ $("working-cancel").addEventListener("click", () => {
 	$("working-phase").textContent = "Stopping";
 	invoke("cancel");
 });
-$("finished-back").addEventListener("click", () => { show("main"); refresh(); });
+$("finished-back").addEventListener("click", () => { state.awaitRestore = false; show("main"); refresh(); });
+$("finished-show").addEventListener("click", () => {
+	invoke("show_card", { card: state.keptCard }).catch((e) => { $("finished-what").textContent = String(e); });
+});
+$("finished-eject").addEventListener("click", async () => {
+	$("finished-eject").disabled = true;
+	try {
+		await invoke("eject_card", { card: state.keptCard });
+		$("finished-what").textContent = "The card is ejected: you can take it out. Put it in the Brick and turn it on. "
+			+ "The backup stays on this computer until you delete it.";
+		$("finished-show").hidden = true;
+		$("finished-eject").hidden = true;
+		$("finished-back").hidden = false;
+		state.keptCard = null;
+	} catch (e) {
+		$("finished-what").textContent = "The card couldn't be ejected: " + e + " Close what has it open and try again.";
+	}
+	$("finished-eject").disabled = false;
+});
 
 if (window.__TAURI__) {
 	window.__TAURI__.event.listen("progress", (e) => progress(e.payload));

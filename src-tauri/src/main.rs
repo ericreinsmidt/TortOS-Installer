@@ -144,6 +144,36 @@ fn open_installer_releases() {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
+/// The card's games partition in the system's file manager (Finder, Explorer,
+/// Files), for copying games, music and audiobooks back after a put-back. The
+/// folder is the card's own, from the system's list of cards: nothing from the
+/// page but the card's id goes into the command.
+#[tauri::command]
+async fn show_card(card: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = cards::list().into_iter().find(|c| c.id == card).ok_or("The card isn't there anymore.")?;
+        let volume = found.volume.ok_or("The card isn't mounted. Take it out and put it back in.")?;
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(windows)]
+        let opener = "explorer";
+        #[cfg(target_os = "linux")]
+        let opener = "xdg-open";
+        std::process::Command::new(opener).arg(&volume).spawn().map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The card handed back for taking out, when the player says: after a
+/// put-back, which leaves it in for the games to be copied back.
+#[tauri::command]
+async fn eject_card(card: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || device::eject(&card))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// A card image to use instead of downloading one, for trying out a build
 /// before it is published: TORTOS_BRICK_IMAGE for the Brick, TORTOS_IMAGE for
 /// the Pixel.
@@ -299,10 +329,13 @@ fn start(app: AppHandle, running: State<Running>, card: String, device: String, 
         };
         #[cfg(windows)]
         autoplay::HOLD.store(true, Ordering::Relaxed);
+        // A put-back leaves the card in: the games, music and audiobooks go
+        // back on next, copied by the player (eject_card when they're done)
+        let keep = matches!(job, Job::Restore);
         let result = run(&card, brick, job, &mut progress, &cancel);
         // A card that finished well is ejected, ready to take out; one that
         // didn't stays, to be written again
-        let eject = result.is_ok().then(|| {
+        let eject = (result.is_ok() && !keep).then(|| {
             let _ = app.emit("progress", ProgressEvent { phase: "ejecting", done: 0, total: 0 });
             device::eject(&card)
         });
@@ -346,7 +379,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![list_cards, backup_plan, latest_tortos, newer_installer,
-                                                 open_installer_releases, start, cancel])
+                                                 open_installer_releases, show_card, eject_card, start, cancel])
         .run(tauri::generate_context!())
         .expect("TortOS Installer could not start");
 }
